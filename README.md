@@ -17,4 +17,7 @@ The projects are organized by the programming language (Python, R).  In the tabl
 |Project Name|Description|Individual or Group|My Specific Contribution|
 |---|---|---|---|
 |||||
-|BroadbandEDA|This project uses R to examine the 3-way relationship between Price, Penetration and Speed of Broadband connectivity across 30 Countries|Group|Univariate Analysis of Price per country, Bivriate Analysis of Price vs Speed, Analysis of 3-way tradeoff|
+|BroadbandEDA|This project uses R to examine the 3-way relationship between Price, Penetration and Speed of Broadband connectivity across 30 Countries. Both .rmd file of our code and pdf file of our report are included|Group|Univariate Analysis of Price per country, Bivriate Analysis of Price vs Speed, Analysis of 3-way tradeoff|
+|CrimeRateLinearModels||Group||
+|ProbabilityLab|This laboratory exercise shows my detailed solutions for a series of problems in Probability (see full pdf file).  The 4th question uses R, with code included in the .rmd file|Individual||
+
