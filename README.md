@@ -2,7 +2,7 @@
 
 This repository contains projects that highlight my body of work in the UC Berkeley's Master of Information and Data Science Program.  The program was completed from May 2018 to May 2020.
 
-The projects are organized by the programming language (Python, R).  In the table below, you will find a brief description of every project, what is included, and whether a project required individual effort or group effort.  For group projects, I have also included notes on my specific contribution. 
+The projects are organized by the programming language (Python, R), and ordered by date of completion.  In the table below, you will find a brief description of every project, what is included, and whether a project required individual effort or group effort.  For group projects, I have also included notes on my specific contribution. 
 
 ## Python 
 
@@ -18,6 +18,6 @@ The projects are organized by the programming language (Python, R).  In the tabl
 |---|---|---|---|
 |||||
 |BroadbandEDA|This project uses R to examine the 3-way relationship between Price, Penetration and Speed of Broadband connectivity across 30 Countries. Both .rmd file of our code and pdf file of our report are included|Group|Univariate Analysis of Price per country, Bivriate Analysis of Price vs Speed, Analysis of 3-way tradeoff|
-|CrimeRateLinearModels||Group||
 |ProbabilityLab|This laboratory exercise shows my detailed solutions for a series of problems in Probability (see full pdf file).  The 4th question uses R, with code included in the .rmd file|Individual||
+|CrimeRateLinearModels||Group||
 
