@@ -1,0 +1,114 @@
+---
+output: pdf_document
+---
+In my R code below, I use the following variable names:
+
+  - $\sigma_{D}$ is represented by sigmaD, which is the standard deviation calculated from (b)
+  - $\sigma_{\bar{D}}$ , the standard error, is represented by sigma_barD 
+  - $\mu_{\bar{D}}$ , the sample distribution mean, is represented by mu_barD
+
+```{r}
+#storing population standard deviation
+(sigmaD = ((pi/4)-(pi/4)**2)**0.5)
+
+#using standard deviation to caculate standard error
+(sigma_barD = sigmaD/(100**0.5))
+
+#storing the sample distribution mean
+(mu_barD = pi/4)
+```
+
+```{r}
+#calculating the probability of sample mean greater than 3/4
+(1-pnorm(3/4, mean = mu_barD, sd=sigma_barD))
+```
+From this output, we have that the $P(\bar{D}>\dfrac{3}{4})\approx\boxed{0.8057}$
+
+(e) Simulating a single draw can be done using runif() which creates random samples for a uniformly distributed random variable within the minimum and maximum bounds used to define the distribution. The first 3 arguments of the runif() function are the number of samples n, the min bound of the distribution, and the max bound of the distribution.
+
+As discussed in (a), $X_i$ and $Y_i$ have uniform distribution in the region [-1, 1], so the arguments for runif() can be set as follows:
+
+ - n=100
+ - min = -1
+ - max = 1
+
+Given the independence of $X_i$ and $Y_i$, runif() is ran separately to create the sample results stored in vectors x and y:
+```{r}
+x = runif(100, min = -1, max = 1)
+y = runif(100, min = -1, max = 1)
+```
+Next, I create a function called D_i for calculating $D_i$, which takes 2 arguments that represent $X_i$ and $Y_i$.  Then I store the results for D_i operating on the vectors x and y in the results vector d
+```{r}
+D_i = function(x,y) {
+  ifelse((x**2+y**2)<1, 1, 0)
+}
+d = D_i(x,y)
+```
+
+Finally, I plot my samples (x,y) in the x-y plane where the data points for $D_i$ = 1 (which corresponds to d=1) are color-coded red, and data points for $D_i$ = 1 are black: 
+```{r}
+plot(x,y, col=d+1, asp = 1, main = 'Distribution of X, Y and D')
+legend(-2, 1, legend=c("d=0", "d=1"),
+       col=c("black", "red"), cex=0.8, pch = 1:1)
+```
+
+From this graph, we can see that for n=100 random samples, the complete distribution of (x,y) rougly resembles a square that spans from -1 to 1 for x and from -1 to 1 for y. The red points that correspond to d = 1 roughly form the shape of the unit circle.  As expected, the points of the sample lie within the square bounds and the points for d=1 lie within the circular bounds that correspond to the figure I created for part (a).
+
+
+(f) The sample average, $\bar{D}$ can be computed using the mean() function as follows:
+```{r}
+#sample average
+(sample_mean = mean(d))
+
+#expected sample average from (a)
+(pi/4)
+```
+The two outputs above show that the average of the sample and the expected mean calculated from part (a) $\dfrac{\pi}{4}\approx0.7853982$ , are quite close, but not exactly equal to each other.  This is expected, since the sample distribution for $\bar{D}$ has non-zero variance. We would expect the measurement of $\bar{D}$ for a sample to deviate from the expected mean and also to be different from sample to sample.  
+
+(g) To generate 10,000 samples, we can use the replicate() function in R. First, we will need to define a function, D_bar, which will accomplish the following:
+  - Create X and Y samples of size n. 
+  - Calculated the corresponding value of $D_i$ for every $(X_i,Y_i)$ using the previously defined function D_i.
+  - Calculate and return the sample mean $\bar{D}$ as the output.
+  
+```{r}
+D_bar = function(n){
+  x_j = runif(n, -1, 1)
+  y_j = runif(n, -1, 1)
+  
+  d_j = D_i(x_j,y_j)
+  return(mean(d_j))
+}
+```
+
+Next, I will set the sample size and replicate the simulation function D_bar 10,000 times:
+```{r}
+#set sample size
+n = 100
+
+#store sample means for 10,000 draws in vector
+sample_means_D = replicate(10000,  D_bar(n))
+```
+
+Lastly, I plot a histogram for the results of the simulation, which are 10,000 values of $\bar{D}$ stored in the vector sample_means_D:
+```{r}
+# plot sample means as histogram
+hist(sample_means_D, breaks=40, xlab = 'Sample Mean', 
+     ylab = 'Frequency', main = 'Sample Distribution for n=100')
+```
+
+From the histogram above, we see that the sample distribution for $\bar{D}$ has the rougly the shape of a normal distribution.
+
+(h) The standard deviation of sample means can be calculated using the sd() function as follows:
+```{r}
+sd(sample_means_D)
+```
+The output here is also very close in comparison to the result from (c) 0.0410546.  This result aligns with our expectation from the CLT, which states that for a sufficiently large sample, sample distribution can be approximated with a normal distribution that has standard deviation equal to the standard error found in (c)
+
+(j) To calculate the fraction of sample averages that are larger than 3/4, I use length() function which counts the number of elements. I can then slice sample_means_D to pick out a subset of numbers that are greater than 3/4, then divide the length() of this subset by the length of the entire vector() sample_means_D: 
+```{r}
+length(sample_means_D[sample_means_D>0.75])/length(sample_means_D)
+```
+
+This output from the simulation of 10,000 draws is very close to answer from (d) $P(\bar{D}>\dfrac{3}{4})\approx0.806$, but the two values are also not exactly equal.
+
+From both the CLT and the histogram shown in (g), we know that the normal distribution is only an approximation for the sample distribution of $\bar{D}$ , but there will be some error. Therefore we should expect some deviation of the actual observed fraction of samples where $\bar{D}>\dfrac{3}{4}$ compared to the calculated probability that $\bar{D}>\dfrac{3}{4}$ using the normal distribution. 

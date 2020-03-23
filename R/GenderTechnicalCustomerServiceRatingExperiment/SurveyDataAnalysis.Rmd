@@ -1,0 +1,1722 @@
+---
+title: "SurveyDataAnalysis"
+author: "Cassie Dili Miguel Yuchen"
+date: "April, 2019"
+geometry: margin=1cm
+output: pdf_document
+---
+\fontsize{8}{11}
+\selectfont
+
+```{r, results='hide', warning=FALSE, include=FALSE, echo=FALSE}
+# load packages 
+library(foreign)
+
+library(data.table)
+library(dplyr)
+
+library(sandwich)                       
+library(lmtest)                        
+library(multiwayvcov)  
+
+library('AER')
+library('stargazer')
+library(MASS)
+```
+
+```{r}
+#Robust standard errors
+rse <- function(model, error) { 
+  vcov <- vcovHC(x = model, type = error)
+  se <- sqrt(diag(vcov))
+  return(se)
+}
+```
+
+## Data Loading, Cleaning, and Transformation
+
+```{r}
+survey_table <- read.csv("Survey Results - Combined.csv", stringsAsFactors = FALSE)
+head(survey_table)
+```
+
+### Column Name Descriptions:
+
+|       Column Name       |                         Variable/Survey Question                              |
+|-------------------------|-------------------------------------------------------------------------------|
+|D_Bad_Support_Scenario|1 if Subject assigned to Bad Support script, 0 if Subject assigned to Good Support|
+|||
+|D_Female|1 If Subject assigned to Female Rep script, 0 if assigned to Male Rep|
+|||
+|Subject_Gender|Gender of Subject|
+|||
+|Subject_Age|Age of Subject|
+|||
+|Recent_Support_Experience|Recall your most recent interaction with a customer support agent. This interaction could be on the phone, via online chat, or in person. How would you rate your experience?|
+|||
+|Compliance_Response|What type of problem was the customer experiencing?|
+|||
+|CS_Rate|Overall, how would you rate the quality of the customer service experience?|
+|||
+|Support_Sat_Rate|How satisfied are you with the knowledge of the technician that solved the issue?|
+|||
+|Rep_Understand_Rate|How well did the technician understand the customer's questions and concerns?|
+|||
+|Hire_Rep|Would you want this person to provide support for you in the future?|
+|||
+|Gift_Card_Amount|When a call transcript is reviewed, representatives are eligible for an 'outstanding service' gift card reward. Based on agent's performance, what reward level would you recommend?|
+|||
+
+### Transformations
+Conventions:
+- Raw Data Columns are never removed
+- Columns transformed to Indicator variables are appended with Ind (for Yes/No) and Pos(for ratings)
+- Questions with rating are currently transfromed as 0 = Neutral/Negative, 1 = Postive/Satisfied
+- Columns transformed to Numeric variables are appended with Num
+
+
+```{r}
+#Transformations 
+
+survey_dt = data.table(survey_table)
+#Count column added for summary tables
+survey_dt[, Count := 1]
+
+#Yes/No Transformation Function
+yes_no = function(x, size){
+  result = rep(0, size)
+  result[x == 'Yes'] = 1
+  return(result)
+}
+
+rating = function(x, size){
+  result = rep(0, size)
+  result[x == 'Very positive' | x == 'Somewhat positive'| 
+         x == 'Very satisfied' | x == 'Satisfied'|
+         x == 'Extremely satisfied' | x == 'Somewhat satisfied'|
+         x == 'Extremely well' | x == 'Very well'|x == 'Somewhat well'] = 1
+  return(result)
+}
+
+#Gender of subjects indicator, Female = 1
+survey_dt[, Subject_Gender_Female:= 0]
+survey_dt[Subject_Gender == 'Female']$Subject_Gender_Female = 1
+
+#Age Blocks
+#Will use 4 blocks in survey but only 2 with less data in pilot
+survey_dt$Subject_Age <- as.numeric(survey_dt$Subject_Age)
+survey_dt[, Subject_Age_Block:=0]
+survey_dt[Subject_Age>39]$Subject_Age_Block = 1
+survey_dt$Subject_Age_Block <- as.factor(survey_dt$Subject_Age_Block)
+
+#Recall Most Recent Interaction with Customer Support
+survey_dt[, Recent_Support_Experience_Pos:=rating(Recent_Support_Experience, nrow(survey_table))]
+
+#Test Question Response to Verify Subject Read the Transcript
+survey_dt[, Compliance_Response_Ind:= 0]
+survey_dt[Compliance_Response == "WiFi Connection Troubleshooting"]$Compliance_Response_Ind = 1
+
+#Rate Quality of Customer Support (CS)
+survey_dt[, CS_Rate_Pos:=rating(CS_Rate, nrow(survey_table))]
+
+#Satisfaction with Technician Knowledge
+survey_dt[, Support_Sat_Rate_Pos:=rating(Support_Sat_Rate, nrow(survey_table))]
+
+#How well did rep understand question
+survey_dt[, Rep_Understand_Rate_Pos:=rating(Rep_Understand_Rate, nrow(survey_table))]
+
+#Want Person to Provide Support Again
+survey_dt[, Hire_Rep_Ind := yes_no(Hire_Rep, nrow(survey_table))]
+
+#Gift Card
+survey_dt[, Gift_Card_Amount_Ind:=0]
+survey_dt[Gift_Card_Amount!='No incentive']$Gift_Card_Amount_Ind = 1
+survey_dt[, Gift_Card_Amount_Num:=0]
+survey_dt[Gift_Card_Amount!='No incentive']$Gift_Card_Amount_Num = as.numeric(
+  survey_dt[Gift_Card_Amount!='No incentive']$Gift_Card_Amount)
+
+```
+
+
+```{r}
+#For plotting purposes only
+#The following transformations to numeric values are not to be used for treatment effect
+
+#Recall Most Recent Interaction with Customer Support
+survey_dt[, Recent_Support_Experience_Num:= 0]
+survey_dt[Recent_Support_Experience == 'Dissatisfied']$Recent_Support_Experience_Num = 1
+survey_dt[Recent_Support_Experience == 'Neither satisfied nor dissatisfied']$Recent_Support_Experience_Num = 2
+survey_dt[Recent_Support_Experience == 'Satisfied']$Recent_Support_Experience_Num = 3
+survey_dt[Recent_Support_Experience == 'Very satisfied']$Recent_Support_Experience_Num = 4
+
+#Rate Quality of Customer Support (CS)
+survey_dt[, CS_Rate_Num:= 0]
+survey_dt[CS_Rate == 'Somewhat negative']$CS_Rate_Num = 1
+survey_dt[CS_Rate == 'Neither positive nor negative']$CS_Rate_Num = 2
+survey_dt[CS_Rate == 'Somewhat positive']$CS_Rate_Num = 3
+survey_dt[CS_Rate == 'Very positive']$CS_Rate_Num = 4
+
+#Satisfaction with Technician Knowledge
+survey_dt[, Support_Sat_Rate_Num:= 0]
+survey_dt[Support_Sat_Rate == 'Somewhat dissatisfied']$Support_Sat_Rate_Num = 1
+survey_dt[Support_Sat_Rate == 'Neither satisfied nor dissatisfied']$Support_Sat_Rate_Num = 2
+survey_dt[Support_Sat_Rate == 'Somewhat satisfied']$Support_Sat_Rate_Num = 3
+survey_dt[Support_Sat_Rate == 'Extremely satisfied']$Support_Sat_Rate_Num = 4
+
+#How well did rep understand question
+survey_dt[, Rep_Understand_Rate_Num:= 0]
+survey_dt[Rep_Understand_Rate == 'Not so well']$Rep_Understand_Rate_Num = 1
+survey_dt[Rep_Understand_Rate == 'Somewhat well']$Rep_Understand_Rate_Num = 2
+survey_dt[Rep_Understand_Rate == 'Very well']$Rep_Understand_Rate_Num = 3
+survey_dt[Rep_Understand_Rate == 'Extremely well']$Rep_Understand_Rate_Num = 4
+
+#Want Person to Provide Support Again
+survey_dt[, Hire_Rep_Num:= 0]
+survey_dt[Hire_Rep == 'Neutral']$Hire_Rep_Num = 1
+survey_dt[Hire_Rep == 'Yes']$Hire_Rep_Num = 2
+```
+
+```{r, echo=FALSE}
+#IMPORTANT - NEVER REMOVE THIS
+#THIS IS MEANT TO CHECK THE ABOVE TRANSFORMATIONS BY RE-ORDERING THE COLUMNS IN ALPHABETICAL ORDER
+
+#Check my work by sorting columns in alphabetical order
+df_check = data.frame(survey_dt)
+df_check<-df_check[,sort(names(df_check))]
+
+transformed_dt = data.table(df_check)
+```
+
+
+## Summary Tables and Histograms
+
+```{r}
+head(transformed_dt)
+
+#Split By Good/Bad Scenario
+good_dt = transformed_dt[D_Bad_Support_Scenario == 0]
+bad_dt = transformed_dt[D_Bad_Support_Scenario == 1]
+```
+###Counts for Treatments, Compliance and Blockers
+```{r}
+#Female scenario
+table(transformed_dt[,factor(D_Female)], dnn = c("Male/Female Support Rep"))
+table(transformed_dt[,factor(D_Female), by = Recent_Support_Experience_Pos])
+```
+```{r}
+#Bad support scenario
+table(transformed_dt[,factor(D_Bad_Support_Scenario)], dnn = c("Good/Bad Support Scenario"))
+table(transformed_dt[,factor(D_Bad_Support_Scenario), by = Recent_Support_Experience_Pos])
+```
+
+```{r}
+#Recent support experience negative
+#Male/female scenario, good/bad support
+table(transformed_dt[Recent_Support_Experience_Pos == 0,factor(D_Female), by = D_Bad_Support_Scenario])
+
+#Recent support experience positive
+#Male/female scenario, good/bad support
+table(transformed_dt[Recent_Support_Experience_Pos == 1,factor(D_Female), by = D_Bad_Support_Scenario])
+```
+
+
+
+```{r}
+#Compliance
+table(transformed_dt[,factor(Compliance_Response_Ind)], dnn = c("Fail/Pass Compliance Question"))
+
+transformed_dt[,mean(Duration..Seconds.), by = Compliance_Response_Ind]
+
+t.test(Duration..Seconds. ~ Compliance_Response_Ind, alternative='two.sided', conf.level=.95, var.equal=FALSE, data=transformed_dt)
+```
+```{r}
+#Pretreatment
+table(transformed_dt[,factor(Recent_Support_Experience_Pos)], dnn = c("Negative/Positive Support Experience"))
+```
+```{r}
+#Subject Gender
+table(transformed_dt[,factor(Subject_Gender_Female)], dnn = c("Male/Female Subject Gender"))
+```
+```{r}
+#Subject Age
+table(transformed_dt[,factor(Subject_Age_Block)], dnn = c("Subject Age Block"))
+```
+
+#### Outcome Variable Distribution
+
+
+```{r, echo=FALSE, fig.align = "center"}
+#Overall customer sat (bad scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$CS_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Overall Cust Sat\nBad Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+foo <- hist(bad_dt[D_Female==1]$CS_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Overall Cust Sat\nBad Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Overall customer sat (good scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(good_dt[D_Female==0]$CS_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Overall Cust Sat\nGood Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+foo <- hist(good_dt[D_Female==1]$CS_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Overall Cust Sat\nGood Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Support rep understood problem (bad scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$Rep_Understand_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Rep understood problem\nBad Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('Not well at all', 'Not so well', 'Somewhat well', 'Very well', 'Extremely well'))
+
+foo <- hist(bad_dt[D_Female==1]$Rep_Understand_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Rep understood problem\nBad Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('Not well at all', 'Not so well', 'Somewhat well', 'Very well', 'Extremely well'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Support rep understood problem (good scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(good_dt[D_Female==0]$Rep_Understand_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Rep understood problem\nGood Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('Not well at all', 'Not so well', 'Somewhat well', 'Very well', 'Extremely well'))
+
+foo <- hist(good_dt[D_Female==1]$Rep_Understand_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Rep understood problem\nGood Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('Not well at all', 'Not so well', 'Somewhat well', 'Very well', 'Extremely well'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Support rep knowledge (bad scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$Support_Sat_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Rep Knowledgable\nBad Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+foo <- hist(bad_dt[D_Female==1]$Support_Sat_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Rep Knowledgable\nBad Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Support rep knowledge (good scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(good_dt[D_Female==0]$Support_Sat_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Rep Knowledgable\nGood Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+foo <- hist(good_dt[D_Female==1]$Support_Sat_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Rep Knowledgable\nGood Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Would hire rep again (bad scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$Hire_Rep_Num, breaks=-1:2,col = "lightblue", xlab="", xaxt="n", main="Would Hire Agent Again\nBad Support Male Rep")
+#axis(side=1,at=foo$mids,labels=c('No', 'Neutral', 'Yes'))
+
+foo <- hist(bad_dt[D_Female==1]$Hire_Rep_Num, breaks=-1:2,col = "pink", xlab="", xaxt="n", main="Would Hire Agent Again\nBad Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('No', 'Neutral', 'Yes'))
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Would hire rep again (good scenario)
+
+par(mfrow = c(1,2))
+
+foo <- hist(good_dt[D_Female==0]$Hire_Rep_Num, breaks=-1:2,col = "lightblue", xlab="", xaxt="n", main="Would Hire Agent Again\nGood Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('No', 'Neutral', 'Yes'))
+
+foo <- hist(good_dt[D_Female==1]$Hire_Rep_Num, breaks=-1:2,col = "pink", xlab="", xaxt="n", main="Would Hire Agent Again\nGood Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('No', 'Neutral', 'Yes'))
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Gift amount (bad scenario)
+
+par(mfrow = c(1,2))
+par(mar=c(5,4,2,0)+.1)
+
+foo <- hist(bad_dt[D_Female==0]$Gift_Card_Amount_Num, breaks=c(-10,0,10,20,30,40,50),col = "lightblue", xlab="", xaxt="n", main="Gift amount\nBad Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('$0','$10','$20','$30','$40','$50'))
+
+foo <- hist(bad_dt[D_Female==1]$Gift_Card_Amount_Num, breaks=c(-10,0,10,20,30,40,50), col = "pink", xlab="", xaxt="n", main="Gift amount\nBad Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('$0','$10','$20','$30','$40','$50'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+#Gift amount (good scenario)
+
+par(mfrow = c(1,2))
+par(mar=c(5,4,2,0)+.1)
+
+foo <- hist(good_dt[D_Female==0]$Gift_Card_Amount_Num, breaks=c(-10,0,10,20,30,40,50),col = "lightblue", xlab="", xaxt="n", main="Gift amount\nGood Support Male Rep")
+axis(side=1,at=foo$mids,labels=c('$0','$10','$20','$30','$40','$50'))
+
+foo <- hist(good_dt[D_Female==1]$Gift_Card_Amount_Num, breaks=c(-10,0,10,20,30,40,50), col = "pink", xlab="", xaxt="n", main="Gift amount\nGood Support Female Rep")
+axis(side=1,at=foo$mids,labels=c('$0','$10','$20','$30','$40','$50'))
+
+```
+
+#### Overall Customer Satisfaction and Subject Age
+
+The following boxplots show the ages of respondents in each category for overall customer satisfaction. 
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+boxplot(bad_dt[D_Female==0]$Subject_Age ~ bad_dt[D_Female==0]$CS_Rate_Num, col='lightblue', axes=F, xlab="Overall cust sat\nBad Support Male Rep", ylab="Subject age")
+axis(side=2)
+axis(side=1, at=1:5, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+boxplot(bad_dt[D_Female==1]$Subject_Age ~ bad_dt[D_Female==1]$CS_Rate_Num, col='pink', axes=F, xlab="Overall cust sat\nBad Support Female Rep", ylab="Subject age")
+axis(side=2)
+axis(side=1, at=1:5, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+boxplot(good_dt[D_Female==0]$Subject_Age ~ good_dt[D_Female==0]$CS_Rate_Num, col='lightblue', axes=F, xlab="Overall cust sat\nGood Support Male Rep", ylab="Subject age")
+axis(side=2)
+axis(side=1, at=1:5, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+boxplot(good_dt[D_Female==1]$Subject_Age ~ good_dt[D_Female==1]$CS_Rate_Num, col='pink', axes=F, xlab="Overall cust sat\nGood Support Female Rep", ylab="Subject age")
+axis(side=2)
+axis(side=1, at=1:5, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+#### Customer Satisfaction and Subject Gender
+
+The following boxplots show the gender of respondents in each category for overall customer satisfaction. 
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+counts <- table(bad_dt[D_Female==0]$Subject_Gender_Female, bad_dt[D_Female==0]$CS_Rate_Num)
+mp <- barplot(counts, col=c("lightblue","pink"),legend = c('Male','Female'), axes=F, xaxt="n",xlab="Overall cust sat\nBad Support Male Rep", ylab="Frequency", args.legend = list(x = "topleft", bty = "n")) 
+axis(side=2)
+axis(side=1, at=mp, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+counts <- table(bad_dt[D_Female==1]$Subject_Gender_Female, bad_dt[D_Female==1]$CS_Rate_Num)
+mp <- barplot(counts, col=c("lightblue","pink"),legend = c('Male','Female'), axes=F, xaxt="n",xlab="Overall cust sat\nBad Support Female Rep", ylab="Frequency", args.legend = list(x = "topleft", bty = "n")) 
+axis(side=2)
+axis(side=1, at=mp, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+```
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+counts <- table(good_dt[D_Female==0]$Subject_Gender_Female, good_dt[D_Female==0]$CS_Rate_Num)
+mp <- barplot(counts, col=c("lightblue","pink"),legend = c('Male','Female'), axes=F, xaxt="n",xlab="Overall cust sat\nGood Support Male Rep", ylab="Frequency", args.legend = list(x = "topright", bty = "n")) 
+axis(side=2)
+axis(side=1, at=mp, labels=c('Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+counts <- table(good_dt[D_Female==1]$Subject_Gender_Female, good_dt[D_Female==1]$CS_Rate_Num)
+mp <- barplot(counts, col=c("lightblue","pink"),legend = c('Male','Female'), axes=F, xaxt="n",xlab="Overall cust sat\nGood Support Female Rep", ylab="Frequency", args.legend = list(x = "topright", bty = "n")) 
+axis(side=2)
+axis(side=1, at=mp, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+## Correlation Analysis
+
+Examining the correlation (if any) between independent variables, and with the binary outcome variables. The chi-squared test produces a p-value under the null hypothesis that the variables are independent, so a low p-value will reject independence and act as a measure of correlation. We also calculate Cramer's V as a scaled measure of association for nominal variables.
+
+```{r, warning=FALSE}
+CHI <- function(x, y) 
+{test <- chisq.test(table(x, y)) 
+result <- c(test$p.value,round(sqrt(test$statistic/length(x)),2))
+return(result)
+}
+```
+
+```{r} 
+cor_outcomes <- transformed_dt[,c('CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')]
+cor_ind_variables <- transformed_dt[,c('D_Female', 'D_Bad_Support_Scenario', 'Recent_Support_Experience_Pos', 'Subject_Age_Block', 'Subject_Gender_Female')]
+cor_ind_variables_df <- as.data.frame(cor_ind_variables)
+```
+
+```{r, warning=FALSE}
+#Customer Success Overall Rating
+
+cor_outcomes.CS_Rate_Pos <- apply(cor_ind_variables_df, 2, function(x) CHI(cor_outcomes$CS_Rate_Pos, x))
+round(cor_outcomes.CS_Rate_Pos[,],2)
+```
+
+```{r, warning=FALSE}
+#Support rep understood problem
+
+cor_outcomes.Rep_Understand_Rate_Pos <- apply(cor_ind_variables_df, 2, function(x) CHI(cor_outcomes$Rep_Understand_Rate_Pos, x))
+round(cor_outcomes.Rep_Understand_Rate_Pos[,],2)
+```
+
+```{r, warning=FALSE}
+#Support rep knowledgable
+
+cor_outcomes.Support_Sat_Rate_Pos <- apply(cor_ind_variables_df, 2, function(x) CHI(cor_outcomes$Support_Sat_Rate_Pos, x))
+round(cor_outcomes.Support_Sat_Rate_Pos[,],2)
+```
+
+```{r, warning=FALSE}
+#Would like to work with the rep again
+
+cor_outcomes.Hire_Rep_Ind <- apply(cor_ind_variables_df, 2, function(x) CHI(cor_outcomes$Hire_Rep_Ind, x))
+round(cor_outcomes.Hire_Rep_Ind[,],2)
+```
+
+```{r, warning=FALSE}
+#Gift card amount
+
+cor_outcomes.Gift_Card_Amount_Ind <- apply(cor_ind_variables_df, 2, function(x) CHI(cor_outcomes$Gift_Card_Amount_Ind, x))
+round(cor_outcomes.Gift_Card_Amount_Ind[,],2)
+```
+
+
+## Covariate Balance Check
+
+```{r}
+#Gender treatment
+null_mod <- transformed_dt[ , lm(D_Female ~ 1)]
+full_mod <- transformed_dt[ , lm(D_Female ~ 1 + Recent_Support_Experience_Pos + Subject_Age_Block + Subject_Gender_Female)]
+anova_mod <- anova(full_mod, null_mod, test = 'F')
+anova_mod
+```
+
+The additional model features do not increase our ability to predict whether someone is in the treatment or control group for the gender treatment.
+
+```{r}
+#Scenario treatment
+null_mod <- transformed_dt[ , lm(D_Bad_Support_Scenario ~ 1)]
+full_mod <- transformed_dt[ , lm(D_Bad_Support_Scenario ~ 1 + Recent_Support_Experience_Pos + Subject_Age_Block + Subject_Gender_Female)]
+anova_mod <- anova(full_mod, null_mod, test = 'F')
+anova_mod
+```
+The additional model features do not increase our ability to predict whether someone is in the treatment or control group for the scenario treatment.
+
+We are satisfied with the randomness of our experiment data.
+
+
+## Hypothesis Testing
+
+We tested four different hypotheses using models best suited to the questions being asked.
+
+We modelled treatment by treatment interactions to test the effect of the combination of our gender and scenario treatments. 
+
+Coefficient interpretation:
+Intercept: male and good
+D_Female: female and good
+D_Bad_Support_Scenario: male and bad
+D_Female*D_Bad_Support_Scenario: female and bad interaction 
+
+The coefficient of D_Female tells us how much more female gender matters when there is no bad support.
+The coefficient of D_Bad_Support_Scenario tells us how much the support scenario matters for the case where gender is male.
+The coefficient of D_Female * D_Bad_Support_Scenario tells us how much more gender matters for good or bad support. For instance, when support is bad, what happens when we change gender from male to female.
+
+We are also including the pretreatment question measuring predisposition to customer support as a covariate to help reduce variance and improve precision.
+
+We tested blocking on age and gender to improve precision of our estimates.
+
+We modelled heterogeneous treatment effect of subject age and subject gender on the effect of gender on each support scenario. Is there any age or gender related tendancy towards praising a particular gender for good support or critiquing the bad support of a particular gender?
+
+These tests were performed for each of the outcomes.
+
+###Overall customer support rating
+
+**Hypothesis 1: Female support reps receive worse overall customer satisfaction ratings than male support reps.**
+
+**Female support reps providing bad support receive worse overall customer satisfaction ratings than male support reps.**
+
+```{r}
+mod_CS_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(CS_Rate_Pos ~ 1 + D_Female)]
+```
+
+
+**Male support reps providing good support receive better overall customer satisfaction ratings than female support reps.**
+
+```{r}
+mod_CS_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(CS_Rate_Pos ~ 1 + D_Female)]
+```
+
+
+```{r}
+stargazer(mod_CS_bad, mod_CS_good,
+          se = list(rse(mod_CS_bad, "HC3"), rse(mod_CS_good, "HC3")), type = "text")
+```
+
+**Hypothesis 2: The discrepancy between female and male rep support ratings is greater when agents provide bad support vs when agents provide good support. How much more does gender matter for good or bad support?**
+
+```{r}
+mod_CS_interactions <- transformed_dt[, lm(CS_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + D_Female * D_Bad_Support_Scenario)]
+```
+
+**Can we improve precision by blocking on predisposition to customer support?**
+```{r}
+mod_CS_interactions_predisp <- transformed_dt[, lm(CS_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                        D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_CS_interactions, mod_CS_interactions_predisp, 
+          se = list(rse(mod_CS_interactions, "HC3"), rse(mod_CS_interactions_predisp, "HC3")), type = "text")
+```
+
+**We adjust the models below to include/not include pretreatment blocker based on this result.**
+
+**Can we improve precision by blocking on subject age?**
+```{r}
+mod_CS_interactions_ageblock <- transformed_dt[, lm(CS_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                         D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                         Subject_Age_Block)]
+```
+**Or by blocking on subject gender?**
+```{r}
+mod_CS_interactions_genderblock <- transformed_dt[, lm(CS_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                            D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                            Subject_Gender_Female)]
+```
+
+```{r}
+stargazer(mod_CS_interactions_predisp, mod_CS_interactions_ageblock, mod_CS_interactions_genderblock, 
+          se = list(rse(mod_CS_interactions, "HC3"),rse(mod_CS_interactions_ageblock, "HC3"),
+                    rse(mod_CS_interactions_genderblock, "HC3")), type = "text")
+```
+
+**Hypothesis 3: Gender based perceptions of customer support vary with the age of the subject.**
+
+```{r}
+mod_CS_HTE_age_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(CS_Rate_Pos ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+mod_CS_HTE_age_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(CS_Rate_Pos ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_CS_HTE_age_bad, mod_CS_HTE_age_good, 
+          se = list(rse(mod_CS_HTE_age_bad, "HC3"), rse(mod_CS_HTE_age_good, "HC3")), type = "text")
+```
+
+**Hypothesis 4: Gender based perceptions of customer support vary with the gender of the subject.**
+
+Modelling heterogeneous treatment effect of subject gender on the effect of gender on each support scenario. 
+
+```{r}
+mod_CS_HTE_gender_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(CS_Rate_Pos ~ 1 + D_Female + Subject_Gender_Female + 
+                                                             D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+mod_CS_HTE_gender_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(CS_Rate_Pos ~ 1 + D_Female + Subject_Gender_Female + 
+                                                              D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_CS_HTE_gender_bad, mod_CS_HTE_gender_good, 
+          se = list(rse(mod_CS_HTE_gender_bad, "HC3"), rse(mod_CS_HTE_gender_good, "HC3")), type = "text")
+```
+
+###How Well the Support Rep Understood the Problem
+
+**Hypothesis 1: Female support reps receive worse ratings for their understanding of the problem than male support reps.**
+
+**Female support reps providing bad support receive worse ratings for their understanding of the problem than male support reps.**
+
+```{r}
+mod_Understand_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female)]
+```
+
+**Male support reps providing good support receive better ratings for their understanding of the problem than female support reps.**
+
+```{r}
+mod_Understand_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female)]
+```
+
+
+```{r}
+stargazer(mod_Understand_bad, mod_Understand_good, 
+          se = list(rse(mod_Understand_bad, "HC3"), rse(mod_Understand_good, "HC3")), type = "text")
+```
+
+**Hypothesis 2: The discrepancy between female and male rep support ratings for their understanding of the problem is greater when agents provide bad support vs when agents provide good support. How much more does gender matter for good or bad support?**
+
+```{r}
+mod_Understand_interactions <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + D_Female * D_Bad_Support_Scenario)]
+```
+
+**Can we improve precision by blocking on predisposition to customer support?**
+```{r}
+mod_Understand_interactions_predisp <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                        D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Understand_interactions, mod_Understand_interactions_predisp, 
+          se = list(rse(mod_Understand_interactions, "HC3"), rse(mod_Understand_interactions_predisp, "HC3")), type = "text")
+```
+
+**We adjust the models below to include/not include pretreatment blocker based on this result.**
+
+**Can we improve precision by blocking on subject age?**
+```{r}
+mod_Understand_interactions_ageblock <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                         D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                         Subject_Age_Block)]
+```
+**Or by blocking on subject gender?**
+```{r}
+mod_Understand_interactions_genderblock <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                            D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                            Subject_Gender_Female)]
+```
+
+```{r}
+stargazer(mod_Understand_interactions_predisp, mod_Understand_interactions_ageblock, mod_Understand_interactions_genderblock, 
+          se = list(rse(mod_Understand_interactions, "HC3"),rse(mod_Understand_interactions_ageblock, "HC3"),
+                    rse(mod_Understand_interactions_genderblock, "HC3")), type = "text")
+```
+
+**Hypothesis 3: Gender based perceptions of support rep understanding vary with the age of the subject.**
+
+```{r}
+mod_Understand_HTE_age_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+mod_Understand_HTE_age_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Understand_HTE_age_bad, mod_Understand_HTE_age_good, 
+          se = list(rse(mod_Understand_HTE_age_bad, "HC3"), rse(mod_Understand_HTE_age_good, "HC3")), type = "text")
+```
+
+**Hypothesis 4: Gender based perceptions of support rep understanding vary with the gender of the subject.**
+
+Modelling heterogeneous treatment effect of subject gender on the effect of gender on each support scenario. 
+
+```{r}
+mod_Understand_HTE_gender_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + Subject_Gender_Female + 
+                                                             D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+mod_Understand_HTE_gender_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Rep_Understand_Rate_Pos ~ 1 + D_Female + Subject_Gender_Female + 
+                                                              D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Understand_HTE_gender_bad, mod_Understand_HTE_gender_good, 
+          se = list(rse(mod_Understand_HTE_gender_bad, "HC3"), rse(mod_Understand_HTE_gender_good, "HC3")), type = "text")
+```
+
+###Satisfaction with Technician Knowledge
+
+**Hypothesis 1: Female support reps receive worse ratings for their technical knowledge than male support reps.**
+
+**Female support reps providing bad support receive worse ratings for their technical knowledge than male support reps.**
+
+```{r}
+mod_Knowledge_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Support_Sat_Rate_Pos ~ 1 + D_Female)]
+```
+
+**Male support reps providing good support receive better ratings for their technical knowledge than female support reps.**
+
+```{r}
+mod_Knowledge_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Support_Sat_Rate_Pos ~ 1 + D_Female)]
+```
+
+```{r}
+stargazer(mod_Knowledge_bad, mod_Knowledge_good,
+          se = list(rse(mod_Knowledge_bad, "HC3"), rse(mod_Knowledge_good, "HC3")), type = "text")
+```
+
+**Hypothesis 2: The discrepancy between female and male rep support ratings for their technical knowledge is greater when agents provide bad support vs when agents provide good support. How much more does gender matter for good or bad support?**
+
+```{r}
+mod_Knowledge_interactions <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + D_Female * D_Bad_Support_Scenario)]
+```
+
+**Can we improve precision by blocking on predisposition to customer support?**
+```{r}
+mod_Knowledge_interactions_predisp <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                        D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Knowledge_interactions, mod_Knowledge_interactions_predisp, 
+          se = list(rse(mod_Knowledge_interactions, "HC3"), rse(mod_Knowledge_interactions_predisp, "HC3")), type = "text")
+```
+
+**We adjust the models below to include/not include pretreatment blocker based on this result.**
+
+**Can we improve precision by blocking on subject age?**
+```{r}
+mod_Knowledge_interactions_ageblock <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                         D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                         Subject_Age_Block)]
+```
+**Or by blocking on subject gender?**
+```{r}
+mod_Knowledge_interactions_genderblock <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                            D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                            Subject_Gender_Female)]
+```
+
+```{r}
+stargazer(mod_Knowledge_interactions_predisp, mod_Knowledge_interactions_ageblock, mod_Knowledge_interactions_genderblock, 
+          se = list(rse(mod_Knowledge_interactions, "HC3"),rse(mod_Knowledge_interactions_ageblock, "HC3"),
+                    rse(mod_Knowledge_interactions_genderblock, "HC3")), type = "text")
+```
+
+**Hypothesis 3: Gender based perceptions of technical knowledge vary with the age of the subject.**
+
+```{r}
+mod_Knowledge_HTE_age_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+mod_Knowledge_HTE_age_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Knowledge_HTE_age_bad, mod_Knowledge_HTE_age_good, 
+          se = list(rse(mod_Knowledge_HTE_age_bad, "HC3"), rse(mod_Knowledge_HTE_age_good, "HC3")), type = "text")
+```
+
+**Hypothesis 4: Gender based perceptions of technical knowledge vary with the gender of the subject.**
+
+Modelling heterogeneous treatment effect of subject gender on the effect of gender on each support scenario. 
+
+```{r}
+mod_Knowledge_HTE_gender_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + Subject_Gender_Female + 
+                                                             D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+mod_Knowledge_HTE_gender_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Support_Sat_Rate_Pos ~ 1 + D_Female + Subject_Gender_Female + 
+                                                              D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Knowledge_HTE_gender_bad, mod_Knowledge_HTE_gender_good, 
+          se = list(rse(mod_Knowledge_HTE_gender_bad, "HC3"), rse(mod_Knowledge_HTE_gender_good, "HC3")), type = "text")
+```
+
+###Want Person to Provide Support Again
+
+**Hypothesis 1: Female support reps receive worse ratings for wanting to hire them again than male support reps.**
+
+**Female support reps providing bad support receive worse ratings for wanting to hire them again than male support reps.**
+
+```{r}
+mod_Hire_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Hire_Rep_Ind ~ 1 + D_Female)]
+```
+
+**Male support reps providing good support receive better ratings for wanting to hire them again than female support reps.**
+
+```{r}
+mod_Hire_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Hire_Rep_Ind ~ 1 + D_Female)]
+```
+
+```{r}
+stargazer(mod_Hire_bad, mod_Hire_good, 
+          se = list(rse(mod_Hire_bad, "HC3"),rse(mod_Hire_good, "HC3")), type = "text")
+```
+
+**Hypothesis 2: The discrepancy between female and male rep support ratings for wanting to hire them again is greater when agents provide bad support vs when agents provide good support. How much more does gender matter for good or bad support?**
+
+```{r}
+mod_Hire_interactions <- transformed_dt[, lm(Hire_Rep_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + D_Female * D_Bad_Support_Scenario)]
+```
+
+**Can we improve precision by blocking on predisposition to customer support?**
+```{r}
+mod_Hire_interactions_predisp <- transformed_dt[, lm(Hire_Rep_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                        D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Hire_interactions, mod_Hire_interactions_predisp, 
+          se = list(rse(mod_Hire_interactions, "HC3"), rse(mod_Hire_interactions_predisp, "HC3")), type = "text")
+```
+
+**We adjust the models below to include/not include pretreatment blocker based on this result.**
+
+**Can we improve precision by blocking on subject age?**
+```{r}
+mod_Hire_interactions_ageblock <- transformed_dt[, lm(Hire_Rep_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                         D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                         Subject_Age_Block)]
+```
+**Or by blocking on subject gender?**
+```{r}
+mod_Hire_interactions_genderblock <- transformed_dt[, lm(Hire_Rep_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                            D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                            Subject_Gender_Female)]
+```
+
+```{r}
+stargazer(mod_Hire_interactions_predisp, mod_Hire_interactions_ageblock, mod_Hire_interactions_genderblock, 
+          se = list(rse(mod_Hire_interactions, "HC3"),rse(mod_Hire_interactions_ageblock, "HC3"),
+                    rse(mod_Hire_interactions_genderblock, "HC3")), type = "text")
+```
+
+**Hypothesis 3: Gender based perceptions of whether to hire the support rep again vary with the age of the subject.**
+
+```{r}
+mod_Hire_HTE_age_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Hire_Rep_Ind ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+mod_Hire_HTE_age_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Hire_Rep_Ind ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Hire_HTE_age_bad, mod_Hire_HTE_age_good, 
+          se = list(rse(mod_Hire_HTE_age_bad, "HC3"), rse(mod_Hire_HTE_age_good, "HC3")), type = "text")
+```
+
+**Hypothesis 4: Gender based perceptions of whether to hire the support rep again vary with the gender of the subject.**
+
+Modelling heterogeneous treatment effect of subject gender on the effect of gender on each support scenario. 
+
+```{r}
+mod_Hire_HTE_gender_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Hire_Rep_Ind ~ 1 + D_Female + Subject_Gender_Female + 
+                                                             D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+mod_Hire_HTE_gender_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Hire_Rep_Ind ~ 1 + D_Female + Subject_Gender_Female + 
+                                                              D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Hire_HTE_gender_bad, mod_Hire_HTE_gender_good, 
+          se = list(rse(mod_Hire_HTE_gender_bad, "HC3"), rse(mod_Hire_HTE_gender_good, "HC3")), type = "text")
+```
+
+
+###Gift Card Indicator
+
+**Hypothesis 1: Female support reps are less likely to receive a gift reward for their support effort than male support reps.**
+
+**Female support reps providing bad support are less likely to receive a gift reward for their effort than male support reps.**
+
+```{r}
+mod_Gift_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Gift_Card_Amount_Ind ~ 1 + D_Female)]
+```
+
+**Male support reps providing good support are less likely to receive a gift reward for their effort than female support reps.**
+
+```{r}
+mod_Gift_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Gift_Card_Amount_Ind ~ 1 + D_Female)]
+```
+
+```{r}
+stargazer(mod_Gift_bad, mod_Gift_good, 
+          se = list(rse(mod_Gift_bad, "HC3"), rse(mod_Gift_good, "HC3")), type = "text")
+```
+
+**Hypothesis 2: The discrepancy between female and male rep's likelihood of receiving a gift reward is greater when agents provide bad support vs when agents provide good support. How much more does gender matter for good or bad support?**
+
+```{r}
+mod_Gift_interactions <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + D_Female * D_Bad_Support_Scenario)]
+```
+
+**Can we improve precision by blocking on predisposition to customer support?**
+```{r}
+mod_Gift_interactions_predisp <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                        D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Gift_interactions, mod_Gift_interactions_predisp, 
+          se = list(rse(mod_Gift_interactions, "HC3"), rse(mod_Gift_interactions_predisp, "HC3")), type = "text")
+```
+
+**We adjust the models below to include/not include pretreatment blocker based on this result.**
+
+**Can we improve precision by blocking on subject age?**
+```{r}
+mod_Gift_interactions_ageblock <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                         D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                         Subject_Age_Block)]
+```
+**Or by blocking on subject gender?**
+```{r}
+mod_Gift_interactions_genderblock <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                            D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                            Subject_Gender_Female)]
+```
+
+```{r}
+stargazer(mod_Gift_interactions_predisp, mod_Gift_interactions_ageblock, mod_Gift_interactions_genderblock, 
+          se = list(rse(mod_Gift_interactions, "HC3"),rse(mod_Gift_interactions_ageblock, "HC3"),
+                    rse(mod_Gift_interactions_genderblock, "HC3")), type = "text")
+```
+
+**Hypothesis 3: Gender based perceptions of whether or not to give a gift reward vary with the age of the subject.**
+
+```{r}
+mod_Gift_HTE_age_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+mod_Gift_HTE_age_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Gift_HTE_age_bad, mod_Gift_HTE_age_good, 
+          se = list(rse(mod_Gift_HTE_age_bad, "HC3"), rse(mod_Gift_HTE_age_good, "HC3")), type = "text")
+```
+
+**Hypothesis 4: Gender based perceptions of whether or not to give a gift reward  vary with the gender of the subject.**
+
+Modelling heterogeneous treatment effect of subject gender on the effect of gender on each support scenario. 
+
+```{r}
+mod_Gift_HTE_gender_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + Subject_Gender_Female + 
+                                                             D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+mod_Gift_HTE_gender_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Gift_Card_Amount_Ind ~ 1 + D_Female + Subject_Gender_Female + 
+                                                              D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Gift_HTE_gender_bad, mod_Gift_HTE_gender_good, 
+          se = list(rse(mod_Gift_HTE_gender_bad, "HC3"), rse(mod_Gift_HTE_gender_good, "HC3")), type = "text")
+```
+
+###Gift Card Amount
+
+**Hypothesis 1: Female support reps receive lower gift amounts than male support reps.**
+
+**Female support reps providing bad support receive lower gift amounts than male support reps.**
+
+```{r}
+mod_Gift_Amt_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Gift_Card_Amount_Num ~ 1 + D_Female)]
+```
+
+**Male support reps providing good support receive higher gift amounts than female support reps.**
+
+```{r}
+mod_Gift_Amt_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Gift_Card_Amount_Num ~ 1 + D_Female)]
+```
+
+```{r}
+stargazer(mod_Gift_bad, mod_Gift_good, 
+          se = list(rse(mod_Gift_bad, "HC3"), rse(mod_Gift_good, "HC3")), type = "text")
+```
+
+**Hypothesis 2: The discrepancy between female and male rep support ratings for gift amounts is greater when agents provide bad support vs when agents provide good support. How much more does gender matter for good or bad support?**
+
+```{r}
+mod_Gift_Amt_interactions <- transformed_dt[, lm(Gift_Card_Amount_Num ~ 1 + D_Female + D_Bad_Support_Scenario + D_Female * D_Bad_Support_Scenario)]
+```
+
+**Can we improve precision by blocking on predisposition to customer support?**
+```{r}
+mod_Gift_Amt_interactions_predisp <- transformed_dt[, lm(Gift_Card_Amount_Num ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                        D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Gift_interactions, mod_Gift_interactions_predisp, 
+          se = list(rse(mod_Gift_interactions, "HC3"), rse(mod_Gift_interactions_predisp, "HC3")), type = "text")
+```
+
+**We adjust the models below to include/not include pretreatment blocker based on this result.**
+
+**Can we improve precision by blocking on subject age?**
+```{r}
+mod_Gift_Amt_interactions_ageblock <- transformed_dt[, lm(Gift_Card_Amount_Num ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                         D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                         Subject_Age_Block)]
+```
+**Or by blocking on subject gender?**
+```{r}
+mod_Gift_Amt_interactions_genderblock <- transformed_dt[, lm(Gift_Card_Amount_Num ~ 1 + D_Female + D_Bad_Support_Scenario + 
+                                            D_Female * D_Bad_Support_Scenario + Recent_Support_Experience_Pos + 
+                                            Subject_Gender_Female)]
+```
+
+```{r}
+stargazer(mod_Gift_Amt_interactions_predisp, mod_Gift_Amt_interactions_ageblock, mod_Gift_Amt_interactions_genderblock, 
+          se = list(rse(mod_Gift_Amt_interactions, "HC3"),rse(mod_Gift_Amt_interactions_ageblock, "HC3"),
+                    rse(mod_Gift_Amt_interactions_genderblock, "HC3")), type = "text")
+```
+
+**Hypothesis 3: Gender based perceptions of how high gift amount to give vary with the age of the subject.**
+
+```{r}
+mod_Gift_Amt_HTE_age_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Gift_Card_Amount_Num ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+mod_Gift_Amt_HTE_age_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Gift_Card_Amount_Num ~ 1 + D_Female + Subject_Age_Block + 
+                          D_Female * Subject_Age_Block + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Gift_HTE_age_bad, mod_Gift_HTE_age_good, 
+          se = list(rse(mod_Gift_HTE_age_bad, "HC3"), rse(mod_Gift_HTE_age_good, "HC3")), type = "text")
+```
+
+**Hypothesis 4: Gender based perceptions of how high gift amount to give vary with the gender of the subject.**
+
+Modelling heterogeneous treatment effect of subject gender on the effect of gender on each support scenario. 
+
+```{r}
+mod_Gift_Amt_HTE_gender_bad <- transformed_dt[D_Bad_Support_Scenario == 1, lm(Gift_Card_Amount_Num ~ 1 + D_Female + Subject_Gender_Female + 
+                                                             D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+mod_Gift_Amt_HTE_gender_good <- transformed_dt[D_Bad_Support_Scenario == 0, lm(Gift_Card_Amount_Num ~ 1 + D_Female + Subject_Gender_Female + 
+                                                              D_Female * Subject_Gender_Female + Recent_Support_Experience_Pos)]
+```
+```{r}
+stargazer(mod_Gift_Amt_HTE_gender_bad, mod_Gift_Amt_HTE_gender_good, 
+          se = list(rse(mod_Gift_Amt_HTE_gender_bad, "HC3"), rse(mod_Gift_Amt_HTE_gender_good, "HC3")), type = "text")
+```
+
+## 95% Confidence Intervals
+
+```{r}
+#Confidence Interval Calculation for any coefficient
+confidence_interval <- function(model, model_name, variable_position){
+  #variable_position refers to the position of the variable in the linear model
+  #for instance, the variable_position of D_Female is always 2
+  
+  coef_matrix = coeftest(model, vcov = vcovHC(model, type = 'HC3'))
+
+  estimate <- coef_matrix[variable_position, 1]
+  standard_error <- coef_matrix[variable_position, 2]
+  
+  #getting critical t values for the upper and lower bounds of 95% confidence interval
+  degrees_of_freedom = summary(mod_CS_bad)$df[2]
+  
+  critical_t = abs(qt(0.025, degrees_of_freedom)) 
+  lower_bound <- estimate - standard_error * critical_t
+  upper_bound <- estimate + standard_error * critical_t
+  CI_width = upper_bound - lower_bound
+  
+  return(c(model_name, toString(variable.names(model)[variable_position]), toString(round(estimate, 4)), 
+           paste("(",toString(round(lower_bound, 4)), ", ", toString(round(upper_bound, 4)), ")", sep = ""),
+           toString(round(CI_width,4))))
+}
+```
+
+###Overall customer support rating
+```{r}
+CS_Rate_models = list(mod_CS_bad, mod_CS_good, mod_CS_interactions, mod_CS_interactions_predisp, 
+                      mod_CS_interactions_ageblock, mod_CS_interactions_genderblock, mod_CS_HTE_age_bad, 
+                      mod_CS_HTE_age_bad, mod_CS_HTE_age_good,mod_CS_HTE_age_good, 
+                      mod_CS_HTE_gender_bad, mod_CS_HTE_gender_bad, mod_CS_HTE_gender_good, 
+                      mod_CS_HTE_gender_good)
+
+CS_var_of_interest = c(2,2,4,2,2,2,2,5,2,5,2,5,2,5)
+
+Model_Names = c("Bad Support Gender Effect", "Good Support Gender Effect", 
+                "GenderTreatmentxScenario Interaction", "Blocking on Pretreatment Question", 
+                "Blocking on Age", "Blocking on Gender", "Bad Support Age HTE", 
+                "Bad Support Age HTE", "Good Support Age HTE",  
+                "Good Support Age HTE", "Bad Support Gender HTE", "Bad Support Gender HTE", 
+                "Good Support Gender HTE", "Good Support Gender HTE")
+
+CS_Rate_Intervals <- data.frame(Model_Notes=character(length=length(CS_var_of_interest)), 
+                 variable_of_interest=character(length=length(CS_var_of_interest)), 
+                 coefficient=numeric(length=length(CS_var_of_interest)), 
+                 CI=numeric(length=length(CS_var_of_interest)),
+                 CI_width =numeric(length=length(CS_var_of_interest)),
+                 stringsAsFactors=F)
+
+for (i in 1:length(CS_var_of_interest)) {
+  result = confidence_interval(CS_Rate_models[[i]], Model_Names[i], CS_var_of_interest[i])
+  
+  for(j in 1:length(result)){
+    CS_Rate_Intervals[i,j] = result[j]
+  }
+                                           
+}
+
+CS_Rate_Intervals
+```
+
+###How Well the Support Rep Understood the Problem
+```{r}
+Understand_Rate_models = list(mod_Understand_bad, mod_Understand_good, mod_Understand_interactions, 
+                              mod_Understand_interactions_predisp, mod_Understand_interactions_ageblock, 
+                              mod_Understand_interactions_genderblock, mod_Understand_HTE_age_bad, 
+                              mod_Understand_HTE_age_bad, mod_Understand_HTE_age_good,mod_Understand_HTE_age_good, 
+                              mod_Understand_HTE_gender_bad, mod_Understand_HTE_gender_bad, 
+                              mod_Understand_HTE_gender_good, mod_Understand_HTE_gender_good)
+
+Understand_var_of_interest =  c(2,2,4,2,2,2,2,5,2,5,2,5,2,5)
+
+Understand_Rate_Intervals <- data.frame(Model_Notes=character(length=length(Understand_var_of_interest)), 
+                 variable_of_interest=character(length=length(Understand_var_of_interest)), 
+                 coefficient=numeric(length=length(Understand_var_of_interest)), 
+                 CI=numeric(length=length(Understand_var_of_interest)),
+                 CI_width =numeric(length=length(Understand_var_of_interest)),
+                 stringsAsFactors=F)
+
+for (i in 1:length(Understand_var_of_interest)) {
+  result = confidence_interval(Understand_Rate_models[[i]], Model_Names[i], Understand_var_of_interest[i])
+  
+  for(j in 1:length(result)){
+    Understand_Rate_Intervals[i,j] = result[j]
+  }
+                                           
+}
+
+Understand_Rate_Intervals
+```
+
+
+###Satisfaction with Technician Knowledge
+```{r}
+Knowledge_Rate_models = list(mod_Knowledge_bad, mod_Knowledge_good, mod_Knowledge_interactions, 
+                             mod_Knowledge_interactions_predisp, mod_Knowledge_interactions_ageblock, 
+                             mod_Knowledge_interactions_genderblock, mod_Knowledge_HTE_age_bad, 
+                             mod_Knowledge_HTE_age_bad, mod_Knowledge_HTE_age_good, 
+                             mod_Knowledge_HTE_age_good, mod_Knowledge_HTE_gender_bad, 
+                             mod_Knowledge_HTE_gender_bad, mod_Knowledge_HTE_gender_good, 
+                             mod_Knowledge_HTE_gender_good)
+
+Knowledge_var_of_interest = c(2,2,4,2,2,2,2,5,2,5,2,5,2,5)
+
+Knowledge_Rate_Intervals <- data.frame(Model_Notes=character(length=length(Knowledge_var_of_interest)), 
+                 variable_of_interest=character(length=length(Knowledge_var_of_interest)), 
+                 coefficient=numeric(length=length(Knowledge_var_of_interest)), 
+                 CI=numeric(length=length(Knowledge_var_of_interest)),
+                 CI_width =numeric(length=length(Knowledge_var_of_interest)),
+                 stringsAsFactors=F)
+
+for (i in 1:length(Knowledge_var_of_interest)) {
+  result = confidence_interval(Knowledge_Rate_models[[i]], Model_Names[i], Knowledge_var_of_interest[i])
+  
+  for(j in 1:length(result)){
+    Knowledge_Rate_Intervals[i,j] = result[j]
+  }
+                                           
+}
+
+Knowledge_Rate_Intervals
+```
+
+###Want Person to Provide Support Again
+```{r}
+Hire_Rate_models = list(mod_Hire_bad, mod_Hire_good, mod_Hire_interactions, 
+                        mod_Hire_interactions_predisp, mod_Hire_interactions_ageblock, 
+                        mod_Hire_interactions_genderblock, mod_Hire_HTE_age_bad, 
+                        mod_Hire_HTE_age_bad, mod_Hire_HTE_age_good, 
+                        mod_Hire_HTE_age_good, mod_Hire_HTE_gender_bad, 
+                        mod_Hire_HTE_gender_bad, mod_Hire_HTE_gender_good, 
+                        mod_Hire_HTE_gender_good)
+
+Hire_var_of_interest = c(2,2,4,2,2,2,2,5,2,5,2,5,2,5)
+
+Hire_Rate_Intervals <- data.frame(Model_Notes=character(length=length(Hire_var_of_interest)), 
+                 variable_of_interest=character(length=length(Hire_var_of_interest)), 
+                 coefficient=numeric(length=length(Hire_var_of_interest)), 
+                 CI=numeric(length=length(Hire_var_of_interest)),
+                 CI_width =numeric(length=length(Hire_var_of_interest)),
+                 stringsAsFactors=F)
+
+for (i in 1:length(Hire_var_of_interest)) {
+  result = confidence_interval(Hire_Rate_models[[i]], Model_Names[i], Hire_var_of_interest[i])
+  
+  for(j in 1:length(result)){
+    Hire_Rate_Intervals[i,j] = result[j]
+  }
+                                           
+}
+
+Hire_Rate_Intervals
+```
+
+###Gift Card Indicator
+```{r}
+Gift_Rate_models = list(mod_Gift_bad, mod_Gift_good, mod_Gift_interactions, 
+                        mod_Gift_interactions_predisp, mod_Gift_interactions_ageblock, 
+                        mod_Gift_interactions_genderblock, mod_Gift_HTE_age_bad, 
+                        mod_Gift_HTE_age_bad, mod_Gift_HTE_age_good, mod_Gift_HTE_age_good, 
+                        mod_Gift_HTE_gender_bad, mod_Gift_HTE_gender_bad, 
+                        mod_Gift_HTE_gender_good, mod_Gift_HTE_gender_good)
+
+Gift_var_of_interest = c(2,2,4,2,2,2,2,5,2,5,2,5,2,5)
+
+Gift_Rate_Intervals <- data.frame(Model_Notes=character(length=length(Gift_var_of_interest)), 
+                 variable_of_interest=character(length=length(Gift_var_of_interest)), 
+                 coefficient=numeric(length=length(Gift_var_of_interest)), 
+                 CI=numeric(length=length(Gift_var_of_interest)),
+                 CI_width =numeric(length=length(Gift_var_of_interest)),
+                 stringsAsFactors=F)
+
+for (i in 1:length(Gift_var_of_interest)) {
+  result = confidence_interval(Gift_Rate_models[[i]], Model_Names[i], Gift_var_of_interest[i])
+  
+  for(j in 1:length(result)){
+    Gift_Rate_Intervals[i,j] = result[j]
+  }
+                                           
+}
+
+Gift_Rate_Intervals
+```
+
+###Gift Card Amount
+```{r}
+Gift_Amt_Rate_models = list(mod_Gift_Amt_bad, mod_Gift_Amt_good, mod_Gift_Amt_interactions, 
+                        mod_Gift_Amt_interactions_predisp, mod_Gift_Amt_interactions_ageblock, 
+                        mod_Gift_Amt_interactions_genderblock, mod_Gift_Amt_HTE_age_bad, 
+                        mod_Gift_Amt_HTE_age_bad, mod_Gift_Amt_HTE_age_good, 
+                        mod_Gift_Amt_HTE_age_good, mod_Gift_Amt_HTE_gender_bad, 
+                        mod_Gift_Amt_HTE_gender_bad, mod_Gift_Amt_HTE_gender_good, 
+                        mod_Gift_Amt_HTE_gender_good)
+
+Gift_Amt_var_of_interest = c(2,2,4,2,2,2,2,5,2,5,2,5,2,5)
+
+Gift_Amt_Rate_Intervals <- data.frame(Model_Notes=character(length=length(Gift_Amt_var_of_interest)), 
+                 variable_of_interest=character(length=length(Gift_Amt_var_of_interest)), 
+                 coefficient=numeric(length=length(Gift_Amt_var_of_interest)), 
+                 CI=numeric(length=length(Gift_Amt_var_of_interest)),
+                 CI_width =numeric(length=length(Gift_Amt_var_of_interest)),
+                 stringsAsFactors=F)
+
+for (i in 1:length(Gift_Amt_var_of_interest)) {
+  result = confidence_interval(Gift_Amt_Rate_models[[i]], Model_Names[i], Gift_Amt_var_of_interest[i])
+  
+  for(j in 1:length(result)){
+    Gift_Amt_Rate_Intervals[i,j] = result[j]
+  }
+                                           
+}
+
+Gift_Amt_Rate_Intervals
+```
+## Single Factor Testing Hypothesis 1
+
+###Overall customer support rating
+
+**Hypothesis 1: Female support reps receive worse overall customer satisfaction ratings than male support reps.**
+
+```{r}
+mod_CS_comb <- transformed_dt[, lm(CS_Rate_Pos ~ D_Female)]
+mod_CS_dummy <- transformed_dt[, lm(CS_Rate_Pos ~ D_Female + D_Bad_Support_Scenario)]
+mod_CS_dummy_pre <- transformed_dt[, lm(CS_Rate_Pos ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+
+```{r}
+stargazer(mod_CS_comb, mod_CS_dummy, mod_CS_dummy_pre,
+          se = list(rse(mod_CS_comb, "HC3"), rse(mod_CS_dummy, "HC3"), rse(mod_CS_dummy_pre, "HC3")), type = "text")
+```
+
+###How Well the Support Rep Understood the Problem
+
+**Hypothesis 1: Female support reps receive worse ratings for their understanding of the problem than male support reps.**
+
+```{r}
+mod_Understand_comb <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ D_Female)]
+mod_Understand_dummy <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ D_Female + D_Bad_Support_Scenario)]
+mod_Understand_dummy_pre <- transformed_dt[, lm(Rep_Understand_Rate_Pos ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+
+```{r}
+stargazer(mod_Understand_comb, mod_Understand_dummy, mod_Understand_dummy_pre,
+          se = list(rse(mod_Understand_comb, "HC3"), rse(mod_Understand_dummy, "HC3"), rse(mod_Understand_dummy_pre, "HC3")), type = "text")
+```
+
+###Satisfaction with Technician Knowledge
+
+**Hypothesis 1: Female support reps receive worse ratings for their technical knowledge than male support reps.**
+
+```{r}
+mod_Knowledge_comb <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ D_Female)]
+mod_Knowledge_dummy <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ D_Female + D_Bad_Support_Scenario)]
+mod_Knowledge_dummy_pre <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+
+```{r}
+stargazer(mod_Knowledge_comb, mod_Knowledge_dummy, mod_Knowledge_dummy_pre,
+          se = list(rse(mod_Knowledge_comb, "HC3"), rse(mod_Knowledge_dummy, "HC3"), rse(mod_Knowledge_dummy_pre, "HC3")), type = "text")
+```
+
+###Want Person to Provide Support Again
+
+**Hypothesis 1: Female support reps receive worse ratings for wanting to hire them again than male support reps.**
+
+```{r}
+mod_Hire_comb <- transformed_dt[, lm(Hire_Rep_Ind ~ D_Female)]
+mod_Hire_dummy <- transformed_dt[, lm(Hire_Rep_Ind ~ D_Female + D_Bad_Support_Scenario)]
+mod_Hire_dummy_pre <- transformed_dt[, lm(Hire_Rep_Ind ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos)]
+```
+
+```{r}
+stargazer(mod_Hire_comb, mod_Hire_dummy, mod_Hire_dummy_pre,
+          se = list(rse(mod_Hire_comb, "HC3"), rse(mod_Hire_dummy, "HC3"),  rse(mod_Hire_dummy_pre, "HC3")), type = "text")
+```
+
+###Gift Card Indicator
+
+**Hypothesis 1: Female support reps are less likely to receive a gift reward for their support effort than male support reps.**
+
+```{r}
+mod_Gift_comb <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ D_Female)]
+mod_Gift_dummy <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ D_Female + D_Bad_Support_Scenario)]
+mod_Gift_dummy_pre <- transformed_dt[, lm(Gift_Card_Amount_Ind ~ D_Female + D_Bad_Support_Scenario  + Recent_Support_Experience_Pos)]
+```
+
+```{r}
+stargazer(mod_Gift_comb, mod_Gift_dummy, mod_Gift_dummy_pre,
+          se = list(rse(mod_Gift_comb, "HC3"), rse(mod_Gift_dummy, "HC3"), rse(mod_Gift_dummy_pre, "HC3")), type = "text")
+```
+
+##Logistic regression Single Factor Testing Hypothesis 1
+
+```{r, warning=FALSE}
+#https://rpubs.com/rslbliss/r_logistic_ws
+mod_CS_ord_logit <- polr(factor(CS_Rate_Num) ~ D_Female, data = transformed_dt)
+mod_Understand_ord_logit <- polr(factor(Rep_Understand_Rate_Num) ~ D_Female, data = transformed_dt)
+mod_Support_Sat_ord_logit <- polr(factor(Support_Sat_Rate_Num) ~ D_Female, data = transformed_dt)
+mod_Hire_ord_logit <- polr(factor(Hire_Rep_Num) ~ D_Female, data = transformed_dt)
+mod_Gift_ord_logit <- polr(factor(Gift_Card_Amount_Num) ~ D_Female, data = transformed_dt)
+
+#stargazer(mod_CS_ord_logit, mod_Understand_ord_logit, mod_Support_Sat_ord_logit, mod_Hire_ord_logit, mod_Gift_ord_logit, apply.coef = exp, apply.se = exp,  t.auto=F, p.auto=F, type = "text")
+stargazer(mod_CS_ord_logit, mod_Understand_ord_logit, mod_Support_Sat_ord_logit, mod_Hire_ord_logit, mod_Gift_ord_logit, type = "text")
+```
+
+```{r, warning=FALSE}
+mod_CS_ord_logit <- polr(factor(CS_Rate_Num) ~ D_Female + D_Bad_Support_Scenario, data = transformed_dt)
+mod_Understand_ord_logit <- polr(factor(Rep_Understand_Rate_Num) ~ D_Female + D_Bad_Support_Scenario, data = transformed_dt)
+mod_Support_Sat_ord_logit <- polr(factor(Support_Sat_Rate_Num) ~ D_Female + D_Bad_Support_Scenario, data = transformed_dt)
+mod_Hire_ord_logit <- polr(factor(Hire_Rep_Num) ~ D_Female + D_Bad_Support_Scenario, data = transformed_dt)
+mod_Gift_ord_logit <- polr(factor(Gift_Card_Amount_Num) ~ D_Female + D_Bad_Support_Scenario, data = transformed_dt)
+
+#stargazer(mod_CS_ord_logit, mod_Understand_ord_logit, mod_Support_Sat_ord_logit, mod_Hire_ord_logit, mod_Gift_ord_logit, apply.coef = exp, apply.se = exp,  t.auto=F, p.auto=F, type = "text")
+stargazer(mod_CS_ord_logit, mod_Understand_ord_logit, mod_Support_Sat_ord_logit, mod_Hire_ord_logit, mod_Gift_ord_logit, type = "text")
+```
+
+```{r, warning=FALSE}
+mod_CS_ord_logit <- polr(factor(CS_Rate_Num) ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos, data = transformed_dt)
+mod_Understand_ord_logit <- polr(factor(Rep_Understand_Rate_Num) ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos, data = transformed_dt)
+mod_Support_Sat_ord_logit <- polr(factor(Support_Sat_Rate_Num) ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos, data = transformed_dt)
+mod_Hire_ord_logit <- polr(factor(Hire_Rep_Num) ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos, data = transformed_dt)
+mod_Gift_ord_logit <- polr(factor(Gift_Card_Amount_Num) ~ D_Female + D_Bad_Support_Scenario + Recent_Support_Experience_Pos, data = transformed_dt)
+
+#stargazer(mod_CS_ord_logit, mod_Understand_ord_logit, mod_Support_Sat_ord_logit, mod_Hire_ord_logit, mod_Gift_ord_logit, apply.coef = exp, apply.se = exp,  t.auto=F, p.auto=F, type = "text")
+stargazer(mod_CS_ord_logit, mod_Understand_ord_logit, mod_Support_Sat_ord_logit, mod_Hire_ord_logit, mod_Gift_ord_logit, type = "text")
+```
+
+
+## Principle Component Analysis
+###Outcome Corrlations
+```{r}
+#Overall customer satisfaction
+cor_outcomes_by_outcomes.CS_Rate_Pos <- apply(cor_outcomes, 2, function(x) CHI(cor_outcomes$CS_Rate_Pos, x))
+round(cor_outcomes_by_outcomes.CS_Rate_Pos[,],2)
+#Support Rep Knowledge
+cor_outcomes_by_outcomes.Support_Sat_Rate_Pos <- apply(cor_outcomes, 2, function(x)
+CHI(cor_outcomes$Support_Sat_Rate_Pos, x))
+round(cor_outcomes_by_outcomes.Support_Sat_Rate_Pos[,],2)
+#Would Hire Support Rep Again
+cor_outcomes_by_outcomes.Hire_Rep_Ind <- apply(cor_outcomes, 2, function(x) CHI(cor_outcomes$Hire_Rep_Ind, x))
+round(cor_outcomes_by_outcomes.Hire_Rep_Ind[,],2)
+#Support rep understanding
+cor_outcomes_by_outcomes.Rep_Understand_Rate_Pos <- apply(cor_outcomes, 2, function(x) CHI(cor_outcomes$Rep_Understand_Rate_Pos, x))
+round(cor_outcomes_by_outcomes.Rep_Understand_Rate_Pos[,],2)
+#Gift card amount
+cor_outcomes_by_outcomes.Gift_Card_Amount_Ind <- apply(cor_outcomes, 2, function(x) CHI(cor_outcomes$Gift_Card_Amount_Ind, x))
+round(cor_outcomes_by_outcomes.Gift_Card_Amount_Ind[,],2)
+
+```
+The three most highly correlated outcome variables are overall customer satisfaction, support rep knowledge and whether the support rep would be hired again. 
+
+```{r}
+#Principle Component Analysis on all five outcome variables for bad support scenario
+outcomes.pca <- prcomp(bad_dt[,c('CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')], retx = TRUE)
+#PCA on the 3 most closely correlated outcomes
+outcomes.pca.3 <- prcomp(bad_dt[,c('CS_Rate_Pos', 'Support_Sat_Rate_Pos', 'Hire_Rep_Ind')], retx = TRUE)
+#summary(outcomes.pca)
+#str(outcomes.pca)
+#dim(outcomes.pca$x)
+
+```
+```{r}
+#Extract the component which captures most of the variance
+outcomes.pca1 <- outcomes.pca$x[,1]
+outcomes.pca1.3 <- outcomes.pca.3$x[,1]
+
+bad_dt_pca <- bad_dt
+bad_dt_pca[, outcomes.pca.5 := outcomes.pca1]
+bad_dt_pca[, outcomes.pca.3 := outcomes.pca1.3]
+head(bad_dt_pca[,c('outcomes.pca.5', 'outcomes.pca.3', 'CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')])
+```
+
+```{r}
+#Model using the new pca outcome
+mod_CS_bad_PCA <- bad_dt[, lm(CS_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos)]
+mod_Support_Sat_bad_PCA <- bad_dt[, lm(Support_Sat_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos)]
+mod_Hire_Rep_bad_PCA <- bad_dt[, lm(Hire_Rep_Ind ~ D_Female + Recent_Support_Experience_Pos)]
+
+mod_pca5_CS_bad <- bad_dt[, lm(outcomes.pca.5 ~ D_Female + Recent_Support_Experience_Pos)]
+#summary(mod_pca5_CS_bad)
+
+mod_pca3_CS_bad <- bad_dt[, lm(outcomes.pca.3 ~ D_Female + Recent_Support_Experience_Pos)]
+#summary(mod_pca3_CS_bad)
+
+stargazer(mod_CS_bad_PCA, mod_Support_Sat_bad_PCA, mod_Hire_Rep_bad_PCA, mod_pca3_CS_bad, mod_pca5_CS_bad, se = list(rse(mod_CS_bad_PCA, "HC3"),rse(mod_Support_Sat_bad_PCA, "HC3"), rse(mod_Hire_Rep_bad_PCA, "HC3"), rse(mod_pca3_CS_bad, "HC3"), rse(mod_pca5_CS_bad, "HC3")), type = "text")
+
+```
+
+The PCA analysis does not substantially improve the magnitude of the estimates or reduce the standard error. There is too much variance in the outcomes projected onto a lower dimensional plane to provide better estimates.
+
+```{r}
+#Principle Component Analysis on all five outcome variables for both scenarios combined
+outcomes.comb.pca <- prcomp(transformed_dt[,c('CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')], retx = TRUE)
+#PCA on the 3 most closely correlated outcomes
+outcomes.comb.pca.3 <- prcomp(transformed_dt[,c('CS_Rate_Pos', 'Support_Sat_Rate_Pos', 'Hire_Rep_Ind')], retx = TRUE)
+#summary(outcomes.pca)
+#str(outcomes.pca)
+#dim(outcomes.pca$x)
+
+```
+```{r}
+#Extract the component which captures most of the variance
+outcomes.comb.pca1 <- outcomes.comb.pca$x[,1]
+outcomes.comb.pca1.3 <- outcomes.comb.pca.3$x[,1]
+
+transformed_dt_pca <- transformed_dt
+transformed_dt_pca[, outcomes.comb.pca.5 := outcomes.comb.pca1]
+transformed_dt_pca[, outcomes.comb.pca.3 := outcomes.comb.pca1.3]
+head(transformed_dt_pca[,c('outcomes.comb.pca.5', 'outcomes.comb.pca.3', 'CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')])
+```
+```{r}
+#Model using the new pca outcome
+mod_CS_comb_PCA <- transformed_dt[, lm(CS_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos)]
+mod_Support_Sat_comb_PCA <- transformed_dt[, lm(Support_Sat_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos)]
+mod_Hire_Rep_comb_PCA <- transformed_dt[, lm(Hire_Rep_Ind ~ D_Female + Recent_Support_Experience_Pos)]
+
+mod_pca5_CS_comb <- transformed_dt[, lm(outcomes.comb.pca.5 ~ D_Female + Recent_Support_Experience_Pos)]
+#summary(mod_pca5_CS_comb)
+
+mod_pca3_CS_comb <- transformed_dt[, lm(outcomes.comb.pca.3 ~ D_Female + Recent_Support_Experience_Pos)]
+#summary(mod_pca3_CS_comb)
+
+stargazer(mod_CS_comb_PCA, mod_Support_Sat_comb_PCA, mod_Hire_Rep_comb_PCA, mod_pca3_CS_comb, mod_pca5_CS_comb, se = list(rse(mod_CS_comb_PCA, "HC3"),rse(mod_Support_Sat_comb_PCA, "HC3"), rse(mod_Hire_Rep_comb_PCA, "HC3"), rse(mod_pca3_CS_comb, "HC3"), rse(mod_pca5_CS_comb, "HC3")), type = "text")
+
+```
+
+
+
+## Randomization Inference
+```{r}
+#Randomization Inference Functions
+
+#The following simulates blocked random assignment for a single blocking variable
+#The primary blocking variable is the pretreatment question outcome, Recent_Support_Experience_Pos
+block_treatment <- function(control_count_0, treatment_count_0, control_count_1, treatment_count_1){
+  c(
+    sample(c(rep(0,control_count_0),rep(1,treatment_count_0))), #control/treatment counts for block 0
+    sample(c(rep(0,control_count_1),rep(1,treatment_count_1))) #control/treatment counts for block 1
+   )
+} 
+  
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+
+#This Randomization_Inference function is only used for data that has been partitioned into Good and Bad support scenarios
+randomization_inference <- function(outcome_variable,treat_vector, 
+                                    control_count_0, treatment_count_0, 
+                                    control_count_1, treatment_count_1){
+
+  outcomes = outcome_variable
+  
+  exp_ATE = mean(outcomes[treat_vector == 1]) - mean(outcomes[treat_vector == 0])
+  print(paste("Experimental Average Treatment Effect: ", toString(round(exp_ATE, 4)), sep = ""))
+
+  #replicate random assignment 100000 times
+  distribution_under_sharp_null <- replicate(100000, 
+                                             calc_ate(outcomes, 
+                                                      block_treatment(control_count_0, 
+                                                                      treatment_count_0, 
+                                                                      control_count_1, 
+                                                                      treatment_count_1)))
+  
+  #plot distribution under the sharp null 
+  hist(distribution_under_sharp_null, 
+  main = "Density under Sharp Null")
+
+  #calculate 2 tailed p-value
+  two_tail_p_t = mean(abs(exp_ATE)<=abs(distribution_under_sharp_null))
+  print(paste("Two Tailed P-Value: ", toString(round(two_tail_p_t, 4)), sep = ""))
+}
+
+
+#The following simulates blocked random assignment for a 2 blocking variables, where one is nested inside the other
+#In this case, we are going to simulate blocked random assignment when we first block on pre-treatment question
+#And then again on good/bad treatment scenario within each block determined by pre-treament question.
+block_treatment_comb <- function(control_count_00, treatment_count_00, 
+                                 control_count_01, treatment_count_01, 
+                                 control_count_10, treatment_count_10, 
+                                 control_count_11, treatment_count_11){
+  c(
+    sample(c(rep(0,control_count_00),rep(1,treatment_count_00))),
+    #control/treatment counts for Recent_Support_Experience_Pos = 0 (pretreatment question),good support
+    sample(c(rep(0,control_count_01),rep(1,treatment_count_01))),
+    #control/treatment counts for Recent_Support_Experience_Pos = 0 (pretreatment question),bad support
+    sample(c(rep(0,control_count_10),rep(1,treatment_count_10))),
+    #control/treatment counts for Recent_Support_Experience_Pos = 1 (pretreatment question), good support
+    sample(c(rep(0,control_count_11),rep(1,treatment_count_11))) 
+    #control/treatment counts for Recent_Support_Experience_Pos = 1 (pretreatment question), bad support
+   )
+} 
+
+#This Randomization_Inference function is only used combined data, where the simulated treatment vector
+#first blocks by pretreatment question, then by good/bad support scenario
+randomization_inference_comb <- function(outcome_variable,treat_vector, 
+                                         control_count_00, treatment_count_00, 
+                                         control_count_01, treatment_count_01, 
+                                         control_count_10, treatment_count_10, 
+                                         control_count_11, treatment_count_11){
+
+  outcomes = outcome_variable
+  
+  exp_ATE = mean(outcomes[treat_vector == 1]) - mean(outcomes[treat_vector == 0])
+  print(paste("Experimental Average Treatment Effect: ", toString(round(exp_ATE, 4)), sep = ""))
+
+  #replicate random assignment 100000 times
+  distribution_under_sharp_null <- replicate(100000, 
+                                             calc_ate(outcomes, 
+                                              block_treatment_comb(control_count_00, treatment_count_00, 
+                                                                   control_count_01, treatment_count_01, 
+                                                                   control_count_10, treatment_count_10,
+                                                                   control_count_11, treatment_count_11)))
+  
+  #plot distribution under the sharp null 
+  hist(distribution_under_sharp_null, 
+  main = "Density under Sharp Null")
+
+  #calculate 2 tailed p-value
+  two_tail_p_t = mean(abs(exp_ATE)<=abs(distribution_under_sharp_null))
+  print(paste("Two Tailed P-Value: ", toString(round(two_tail_p_t, 4)), sep = ""))
+}
+```
+
+In order to ensure that random assignment by blocking occurs, I need to take a look at the summary of counts of those assigned to treatment and control per block.  For simulating good and bad support scenarios separately, I also created a table for counts assigned to treatment/control per block within either support scenario.  
+```{r}
+transformed_dt[, .(counts = sum(Count)), keyby = .(D_Bad_Support_Scenario, Recent_Support_Experience_Pos, D_Female)]
+transformed_dt[, .(counts = sum(Count)), keyby = .(Recent_Support_Experience_Pos, D_Bad_Support_Scenario, D_Female)]
+```
+
+In order to ensure that we actually calculate simulated ATEs under blocking conditions, we need to sort our data tables by the blocked variable, in this case by ascending order, to group all of the rows of the same block together. 
+
+For randomization inference on the all of the data, the rows are sorted by the pre-treatment question outcome, Recent_Support_Experience_Pos, then by good and bad scenarios.  Random assignment in each simulation is performed within either each scenario block that is nested within the pre-treament question block. 
+
+For randomization inference on just the good treatment scenario data or the bad treatment scenario data subsets, either subset is just sorted by the pretreatment question Recent_Support_Experience_Pos.  
+
+```{r}
+transformed_dt_sort = transformed_dt[order(Recent_Support_Experience_Pos, D_Bad_Support_Scenario), ]
+bad_dt_sort = bad_dt[order(Recent_Support_Experience_Pos), ]
+good_dt_sort = good_dt[order(Recent_Support_Experience_Pos), ]
+```
+
+Lastly we check that the blocked random assignment is actually working. If the block_treatment() and block_treatment_comb() function works, we should see the same results in a crosstab of blocking variable and block_treatment vector as I would in a crosstab of blocking variable and actual treatment vector. 
+
+```{r}
+table(good_dt_sort$Recent_Support_Experience_Pos, good_dt_sort$D_Female)
+table(good_dt_sort$Recent_Support_Experience_Pos, block_treatment(23, 21, 45, 51))
+```
+
+```{r}
+table(transformed_dt_sort$Recent_Support_Experience_Pos, transformed_dt_sort$D_Female)
+table(transformed_dt_sort$Recent_Support_Experience_Pos, block_treatment_comb(23, 21, 13, 24, 45, 51, 48, 41))
+```
+
+###Overall customer support rating
+
+**Sharp Null: The gender of the support agent has no effect on overall customer satisfaction rating for any subject**
+```{r}
+randomization_inference_comb(transformed_dt_sort$CS_Rate_Pos, transformed_dt_sort$D_Female, 23, 21, 13, 24, 45, 51, 48, 41)
+```
+
+**Sharp Null (Good Support): The gender of the support agent has no effect on overall customer satisfaction rating for any subject given the good support scenario**
+```{r}
+randomization_inference(good_dt_sort$CS_Rate_Pos, good_dt_sort$D_Female, 23, 21, 45, 51)
+```
+
+**Sharp Null (Bad Support): The gender of the support agent has no effect on overall customer satisfaction rating for any subject given the bad support scenario**
+```{r}
+randomization_inference(bad_dt_sort$CS_Rate_Pos, bad_dt_sort$D_Female, 13, 24, 48, 41)
+```
+
+
+
+###How Well did Support Rep Understand the problem
+
+**Sharp Null: The gender of the support agent has no effect on the subject's rating of the agent's ability to understand the problem**
+```{r}
+randomization_inference_comb(transformed_dt_sort$Rep_Understand_Rate_Pos, transformed_dt_sort$D_Female, 23, 21, 13, 24, 45, 51, 48, 41)
+```
+
+**Sharp Null (Good Support): The gender of the support agent has no effect on the subject's rating of the agent's ability to understand the problem, for any subject given the good support scenario**
+```{r}
+randomization_inference(good_dt_sort$Rep_Understand_Rate_Pos, good_dt_sort$D_Female, 23, 21, 45, 51)
+```
+
+**Sharp Null (Bad Support): The gender of the support agent has no effect on the subject's rating of the agent's ability to understand the problem, for any subject given the bad support scenario**
+```{r}
+randomization_inference(bad_dt_sort$Rep_Understand_Rate_Pos, bad_dt_sort$D_Female, 13, 24, 48, 41)
+```
+
+###Satisfaction with Technician Knowledge
+
+**Sharp Null: The gender of the support agent has no effect on the subject's rating of the agent's technical knowledge**
+```{r}
+randomization_inference_comb(transformed_dt_sort$Support_Sat_Rate_Pos, transformed_dt_sort$D_Female, 23, 21, 13, 24, 45, 51, 48, 41)
+```
+
+**Sharp Null (Good Support): The gender of the support agent has no effect on the subject's rating of the agent's technical knowledge, for any subject given the good support scenario**
+```{r}
+randomization_inference(good_dt_sort$Support_Sat_Rate_Pos, good_dt_sort$D_Female, 23, 21, 45, 51)
+```
+
+
+**Sharp Null (Bad Support): The gender of the support agent has no effect no effect on the subject's rating of the agent's technical knowledge, for any subject given the bad support scenario**
+```{r}
+randomization_inference(bad_dt_sort$Support_Sat_Rate_Pos, bad_dt_sort$D_Female, 13, 24, 48, 41)
+```
+
+###Want Person to provide support again
+
+**Sharp Null: The gender of the support agent has no effect on the subject's rating wanting to hire the agent again**
+```{r}
+randomization_inference_comb(transformed_dt_sort$Hire_Rep_Ind, transformed_dt_sort$D_Female, 23, 21, 13, 24, 45, 51, 48, 41)
+```
+
+**Sharp Null (Good Support): The gender of the support agent has no effect on the subject's rating wanting to hire the agent again, for any subject given the good support scenario**
+```{r}
+randomization_inference(good_dt_sort$Hire_Rep_Ind, good_dt_sort$D_Female, 23, 21, 45, 51)
+```
+
+
+**Sharp Null (Bad Support): The gender of the support agent has no effect on the subject's rating wanting to hire the agent again, for any subject given the bad support scenario**
+```{r}
+randomization_inference(bad_dt_sort$Hire_Rep_Ind, bad_dt_sort$D_Female, 13, 24, 48, 41)
+```
+
+###Gift Card Indicator
+**Sharp Null: The gender of the support agent has no effect on the subject's willingness to a reward gift card to the agent**
+```{r}
+randomization_inference_comb(transformed_dt_sort$Gift_Card_Amount_Ind, transformed_dt_sort$D_Female, 23, 21, 13, 24, 45, 51, 48, 41)
+```
+
+**Sharp Null (Good Support): The gender of the support agent has no effect on the subject's willingness to a reward gift card to the agent, for any subject given the good support scenario**
+```{r}
+randomization_inference(good_dt_sort$Gift_Card_Amount_Ind, good_dt_sort$D_Female, 23, 21, 45, 51)
+```
+
+
+**Sharp Null (Bad Support): The gender of the support agent has no effect on the subject's willingness to a reward gift card to the agent, for any subject given the bad support scenario**
+```{r}
+randomization_inference(bad_dt_sort$Gift_Card_Amount_Ind, bad_dt_sort$D_Female, 13, 24, 48, 41)
+```
+
+###Gift Card Amount
+**Sharp Null: The gender of the support agent has no effect on the subject's willingness to a reward gift card to the agent**
+```{r}
+randomization_inference_comb(transformed_dt_sort$Gift_Card_Amount_Num, transformed_dt_sort$D_Female, 23, 21, 13, 24, 45, 51, 48, 41)
+```
+
+**Sharp Null (Good Support): The gender of the support agent has no effect on the subject's reward gift card amount given to the agent, for any subject given the good support scenario**
+```{r}
+randomization_inference(good_dt_sort$Gift_Card_Amount_Num, good_dt_sort$D_Female,  23, 21, 45, 51)
+```
+
+**Sharp Null (Bad Support): The gender of the support agent has no effect on the subject's reward gift card amount given to the agent, for any subject given the bad support scenario**
+```{r}
+randomization_inference(bad_dt_sort$Gift_Card_Amount_Num, bad_dt_sort$D_Female, 13, 24, 48, 41)
+```

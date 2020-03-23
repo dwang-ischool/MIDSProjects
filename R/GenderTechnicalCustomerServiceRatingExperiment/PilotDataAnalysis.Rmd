@@ -1,0 +1,1011 @@
+---
+title: "PilotDataAnalysis"
+author: "Cassie Dili Yuchen Miguel"
+date: "3/20/2019"
+geometry: margin=1cm
+output: pdf_document
+---
+\fontsize{8}{11}
+\selectfont
+
+# Pilot Study
+```{r, results='hide', warning=FALSE, include=FALSE}
+# load packages 
+library(foreign)
+
+library(data.table)
+library(dplyr)
+
+library(sandwich)                       
+library(lmtest)                        
+library(multiwayvcov)  
+
+library('AER')
+library('stargazer')
+library(MASS)
+set.seed(898)
+```
+
+## Data Loading, Cleaning, and Transformation
+
+### Column Name Descriptions:
+
+|       Column Name       |                         Variable/Survey Question                              |
+|-------------------------|-------------------------------------------------------------------------------|
+|D_Bad_Support_Scenario|1 if Subject assigned to Bad Support script, 0 if Subject assigned to Good Support|
+|||
+|D_Female|1 If Subject assigned to Female Rep script, 0 if assigned to Male Rep|
+|||
+|Subject_Gender|Gender of Subject|
+|||
+|Subject_Age|Age of Subject|
+|||
+|Recent_Support_Experience|Recall your most recent interaction with a customer support agent. This interaction could be on the phone, via online chat, or in person. How would you rate your experience?|
+|||
+|CS_Ever_Outstanding|Have you ever experienced support that you would rate as Outstanding?|
+|||
+|CS_Good_Use_of_Time|Rate this statement: contacting customer support when I need to solve a problem is a good use of my time.|
+|||
+|How_Often_Contact_CS|How many times a month do you contact customer support?|
+|||
+|Test_Question_Response|Which system was the customer experiencing a problem using?|
+|||
+|Rep_Rate|Overall, how would you rate the quality of the customer service experience?|
+|||
+|Support_Sat_Rate|How satisfied are you with the knowledge of the technician that solved the issue?|
+|||
+|Rep_Understand_Rate|How well did the technician understand the customer's questions and concerns?|
+|||
+|Hire_Rep|Would you want this person to provide support for you in the future?|
+|||
+|Gift_Card_Amount|When a call transcript is reviewed, representatives are eligible for an 'outstanding service' gift card reward. Based on agent's performance, what reward level would you recommend?|
+|||
+|Questions_Confusing_Strange|Did you find any of the survey questions confusing or strange?  If so, which ones?|
+|||
+|Notice_Gender|Did you notice the support agent's gender?|
+|||
+|Gender_Influence_Rating|If you answered yes in the question above, do you feel, in retrospect, that the gender of the support agent influenced your rating of the support agent in anyway?|
+|||
+|X2_Col_Confuse|Did you find the view of the customer service script, which consisted of 2 columns, confusing?|
+|||
+
+### Cleaning Notes
+
+All Data was cleaned prior to loading.  A few notes:
+- One subject removed due to responding to both Treatment and Control.  We considered using subject's first response scenario, but this scenario did not match assignment. - Post survey questions transformed to binary variables, except Gender_Influence_Rating prior to dataload
+- All other variables loaded as raw data.  This is so we can performed automated transformations directly inside of R, and re-use code for actual experiment data.  
+
+```{r}
+pilot_table <- read.csv("PilotData.csv", stringsAsFactors = FALSE)
+head(pilot_table)
+```
+
+```{r}
+pilot_dt = data.table(pilot_table)
+#Count column added for summary tables
+pilot_dt[, Count := 1]
+```
+
+
+### Transformations
+
+Conventions:
+- Raw Data Columns are never removed
+- Columns transformed to Indicator variables are appended with Ind (for Yes/No) and Pos(for ratings)
+- Questions with rating are currently transfromed as 0 = Neutral/Negative, 1 = Postive/Satisfied
+- Columns transformed to Numeric variables are appended with Num
+
+```{r}
+#Transformations 
+
+#Yes/No Transformation Function
+yes_no = function(x, size){
+  result = rep(0, size)
+  result[x == 'Yes'] = 1
+  return(result)
+}
+
+rating = function(x, size){
+  result = rep(0, size)
+  result[x == 'Very positive' | x == 'Somewhat positive' ] = 1
+  return(result)
+}
+
+rating_num = function(x, size){
+  result = rep(0, size)
+  result[x == 'Very positive'] = 4
+  result[x == 'Somewhat positive'] = 3
+  result[x == 'Neutral'] = 2
+  result[x == 'Somewhat negative'] = 1
+  result[x == 'Very negative'] = 0
+  return(result)
+}
+
+#Yes/No Columns
+#Yes = 1, No = 0
+#Ever received outstanding support
+pilot_dt[, CS_Ever_Outstanding_Ind := yes_no(CS_Ever_Outstanding, nrow(pilot_table))]
+
+#Want Person to Provide Support Again
+pilot_dt[, Hire_Rep_Ind := yes_no(Hire_Rep, nrow(pilot_table))]
+
+#Gender of subjects indicator, Female = 1
+pilot_dt[, Subject_Gender_Female:= 0]
+pilot_dt[Subject_Gender == 'F']$Subject_Gender_Female = 1
+
+#Recall Most Recent Interaction with Customer Support
+pilot_dt[, Recent_Support_Experience_Pos:= 0]
+pilot_dt[Recent_Support_Experience == 'Very satisfied' | 
+           Recent_Support_Experience == 'Satisfied']$Recent_Support_Experience_Pos = 1
+pilot_dt[, Recent_Support_Experience_Num:= 0]
+pilot_dt[Recent_Support_Experience == 'Dissatisfied']$Recent_Support_Experience_Num = 1
+pilot_dt[Recent_Support_Experience == 'Neither satisfied nor dissatisfied']$Recent_Support_Experience_Num = 2
+pilot_dt[Recent_Support_Experience == 'Satisfied']$Recent_Support_Experience_Num = 3
+pilot_dt[Recent_Support_Experience == 'Very satisfied']$Recent_Support_Experience_Num = 4
+
+#Contacting Customer support is a good use of my time
+pilot_dt[, CS_Good_Use_of_Time_Pos:= 0]
+pilot_dt[CS_Good_Use_of_Time == 'Strongly agree' | 
+           CS_Good_Use_of_Time == 'Agree']$CS_Good_Use_of_Time_Pos = 1
+pilot_dt[, CS_Good_Use_of_Time_Num:= 0]
+pilot_dt[CS_Good_Use_of_Time == 'Disagree']$CS_Good_Use_of_Time_Num = 1
+pilot_dt[CS_Good_Use_of_Time == 'Neither agree nor disagree']$CS_Good_Use_of_Time_Num = 2
+pilot_dt[CS_Good_Use_of_Time == 'Agree']$CS_Good_Use_of_Time_Num = 3
+pilot_dt[CS_Good_Use_of_Time == 'Strongly agree']$CS_Good_Use_of_Time_Num = 4
+
+#How Often Contact support
+pilot_dt[, How_Often_Contact_CS_Ind:= 0]
+pilot_dt[How_Often_Contact_CS == 'A few times a month'| How_Often_Contact_CS == 'About once a week']$How_Often_Contact_CS_Ind = 1
+pilot_dt[How_Often_Contact_CS == 'A few times a week']$How_Often_Contact_CS_Ind = 1
+pilot_dt[, How_Often_Contact_CS_Num:= 0]
+pilot_dt[How_Often_Contact_CS == 'Once a month']$How_Often_Contact_CS_Num = 1
+pilot_dt[How_Often_Contact_CS == 'A few times a month']$How_Often_Contact_CS_Num = 2
+pilot_dt[How_Often_Contact_CS == 'About once a week']$How_Often_Contact_CS_Num = 3
+pilot_dt[How_Often_Contact_CS == 'A few times a week']$How_Often_Contact_CS_Num = 4
+
+#Test Question Response to Verify Subject Read the Transcript
+pilot_dt[, Test_Question_Response_Ind:= 0]
+pilot_dt[Test_Question_Response == "Correct"]$Test_Question_Response_Ind = 1
+
+#Rate Quality of Customer Support (CS)
+pilot_dt[, CS_Rate_Pos:=rating(CS_Rate, nrow(pilot_table))]
+pilot_dt[, CS_Rate_Num:=rating_num(CS_Rate, nrow(pilot_table))]
+
+#Satisfaction with Technician Knowledge
+pilot_dt[, Support_Sat_Rate_Pos:=rating(Support_Sat_Rate, nrow(pilot_table))]
+pilot_dt[, Support_Sat_Rate_Num:=rating_num(Support_Sat_Rate, nrow(pilot_table))]
+
+#How well did rep understand question
+pilot_dt[, Rep_Understand_Rate_Pos:=0]
+pilot_dt[Rep_Understand_Rate == 'Extremely well' | Rep_Understand_Rate == 'Very well' | Rep_Understand_Rate == 'Somewhat well' ]$Rep_Understand_Rate_Pos = 1
+pilot_dt[, Rep_Understand_Rate_Num:= 0]
+pilot_dt[Rep_Understand_Rate == 'Not so well']$Rep_Understand_Rate_Num = 1
+pilot_dt[Rep_Understand_Rate == 'Somewhat well']$Rep_Understand_Rate_Num = 2
+pilot_dt[Rep_Understand_Rate == 'Very well']$Rep_Understand_Rate_Num = 3
+pilot_dt[Rep_Understand_Rate == 'Extremely well']$Rep_Understand_Rate_Num = 4
+
+#Gift Card
+pilot_dt[, Gift_Card_Amount_Ind:=0]
+pilot_dt[Gift_Card_Amount!='Nothing']$Gift_Card_Amount_Ind = 1
+pilot_dt[, Gift_Card_Amount_Num:=0]
+pilot_dt[Gift_Card_Amount!='Nothing']$Gift_Card_Amount_Num = as.numeric(
+  pilot_dt[Gift_Card_Amount!='Nothing']$Gift_Card_Amount)
+
+#Age Blocks
+#Will use 4 blocks in survey but only 2 with less data in pilot
+pilot_dt[, Subject_Age_Block:=0]
+pilot_dt[Subject_Age>35]$Subject_Age_Block = 1
+#pilot_dt[Subject_Age>24 & Subject_Age<40]$Subject_Age_Block = 1
+#pilot_dt[Subject_Age>39 & Subject_Age<56]$Subject_Age_Block = 2
+#pilot_dt[Subject_Age>55]$Subject_Age_Block = 3
+```
+
+```{r, echo=FALSE}
+#IMPORTANT - NEVER REMOVE THIS
+#THIS IS MEANT TO CHECK THE ABOVE TRANSFORMATIONS BY RE-ORDERING THE COLUMNS IN ALPHABETICAL ORDER
+
+#Check my work by sorting columns in alphabetical order
+df_check = data.frame(pilot_dt)
+df_check<-df_check[,sort(names(df_check))]
+
+transformed_dt = data.table(df_check)
+```
+
+Split By Good/Bad Scenario
+```{r}
+good_dt = transformed_dt[D_Bad_Support_Scenario == 0]
+bad_dt = transformed_dt[D_Bad_Support_Scenario == 1]
+```
+
+
+## Summary Tables and Histograms
+
+### All Data (includes 4 subjects in the good scenario)
+```{r}
+head(transformed_dt)
+
+#Female
+summary(transformed_dt[,factor(D_Female)])
+
+#Bad support scenario
+summary(transformed_dt[,factor(D_Bad_Support_Scenario)])
+```
+####Pre-treatment Variable Distribution.
+
+```{r, echo=FALSE}
+foo1 <- hist(transformed_dt$CS_Ever_Outstanding_Ind, breaks=-1:1, col = "lightblue", xlab="", xaxt="n", main="Ever Experienced Outstanding Support")
+axis(side=1,at=foo1$mids,labels=c('No', 'Yes'))
+```
+```{r, echo=FALSE, fig.align = "center"}
+foo2 <- hist(transformed_dt$CS_Good_Use_of_Time_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Customer Support Good Use of Time")
+axis(side=1,at=foo2$mids,labels=c('Strongly disagree','Disagree','Neither','Agree','Strongly agree'))
+```
+```{r, echo=FALSE, fig.align = "center"}
+foo3 <- hist(transformed_dt$How_Often_Contact_CS_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="How Often Contact Customer Support")
+#axis(side=1,at=foo3$mids,labels=c('Less than once a month','Once a month','A few times a month','About once a week','A few times a week'))
+axis(side=1,at=foo3$mids,labels=c('< 1 / mth','1 / mth','few / month','1 / wk','few / wk'))
+```
+```{r, echo=FALSE, fig.align = "center"}
+#par(mfrow = c(1,1))
+par(mar=c(5,4,2,0)+.1)
+foo4 <- hist(transformed_dt$Recent_Support_Experience_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Customer Support Recent Experience")
+axis(side=1,at=foo4$mids,labels=c('Very dissatisfied', 'Dissatisfied', 'Neither', 'Satisfied', 'Very satisfied'))
+
+```
+
+### Bad Support Scenario Data
+#### Outcome Variable Distribution
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$CS_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Overall Cust Sat - Male Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+foo <- hist(bad_dt[D_Female==1]$CS_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Overall Cust Sat - Female Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$Rep_Understand_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Rep understood - Male Rep")
+axis(side=1,at=foo$mids,labels=c('Not well at all', 'Not so well', 'Somewhat well', 'Very well', 'Extremely well'))
+
+foo <- hist(bad_dt[D_Female==1]$Rep_Understand_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Rep understood - Female Rep")
+axis(side=1,at=foo$mids,labels=c('Not well at all', 'Not so well', 'Somewhat well', 'Very well', 'Extremely well'))
+
+```
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$Support_Sat_Rate_Num, breaks=-1:4, col = "lightblue", xlab="", xaxt="n", main="Rep Knowledge - Male Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+foo <- hist(bad_dt[D_Female==1]$Support_Sat_Rate_Num, breaks=-1:4, col = "pink", xlab="", xaxt="n", main="Rep Knowledge - Female Rep")
+axis(side=1,at=foo$mids,labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+foo <- hist(bad_dt[D_Female==0]$Hire_Rep_Ind, breaks=-1:1,col = "lightblue", xlab="", xaxt="n", main="Hire Agent Again - Male Rep")
+axis(side=1,at=foo$mids,labels=c('No', 'Yes'))
+
+foo <- hist(bad_dt[D_Female==1]$Hire_Rep_Ind, breaks=-1:1,col = "pink", xlab="", xaxt="n", main="Hire Agent Again - Female Rep")
+axis(side=1,at=foo$mids,labels=c('No', 'Yes'))
+```
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+par(mar=c(5,4,2,0)+.1)
+
+foo <- hist(bad_dt[D_Female==0]$Gift_Card_Amount_Num, breaks=c(-10,0,10,20,30,40,50),col = "lightblue", xlab="", xaxt="n", main="Gift amount - Male Rep")
+axis(side=1,at=foo$mids,labels=c('$0','$10','$20','$30','$40','$50'))
+
+foo <- hist(bad_dt[D_Female==1]$Gift_Card_Amount_Num, breaks=c(-10,0,10,20,30,40,50), col = "pink", xlab="", xaxt="n", main="Gift amount - Female Rep")
+axis(side=1,at=foo$mids,labels=c('$0','$10','$20','$30','$40','$50'))
+
+```
+A little bit concerned about the 2 respondents who wish to give $50 to the support rep who performed poorly.  Given these 2 outliers, I am not sure if we can trust the validity of any analysis when treating this variable as a numeric variable. 
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+foo <- hist(transformed_dt[D_Female==0]$Notice_Gender, breaks=-2:2, col = "lightblue", xlab="", xaxt="n", main="Noticed Gender -  Male Rep")
+axis(side=1,at=foo$mids,labels=c('', 'No', 'Yes', ''))
+
+foo <- hist(transformed_dt[D_Female==1]$Notice_Gender, breaks=-2:2, col = "pink", xlab="", xaxt="n", main="Noticed Gender - Female Rep")
+axis(side=1,at=foo$mids,labels=c('', 'No', 'Yes', ''))
+
+```
+
+#### Customer Satisfaction and Subject Age
+
+The following boxplot shows the ages of respondents in each category for overall customer satisfaction. 
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+boxplot(bad_dt[D_Female==0]$Subject_Age ~ bad_dt[D_Female==0]$CS_Rate_Num, col='lightblue', axes=F, xlab="Overall cust sat - Male Rep", ylab="Subject age")
+axis(side=2)
+axis(side=1, at=1:5, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+boxplot(bad_dt[D_Female==1]$Subject_Age ~ bad_dt[D_Female==1]$CS_Rate_Num, col='pink', axes=F, xlab="Overall cust sat - Female Rep", ylab="Subject age")
+axis(side=2)
+axis(side=1, at=1:5, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+```
+
+#### Customer Satisfaction and Subject Gender
+
+The following boxplot shows the gender of respondents in each category for overall customer satisfaction. 
+
+```{r, echo=FALSE, fig.align = "center"}
+par(mfrow = c(1,2))
+
+counts <- table(bad_dt[D_Female==0]$Subject_Gender_Female, bad_dt[D_Female==0]$CS_Rate_Num)
+mp <- barplot(counts, col=c("lightblue","pink"),legend = c('Male','Female'), axes=F, xaxt="n",xlab="Overall cust sat - Male Rep", ylab="Frequency", args.legend = list(x = "topright", bty = "n")) 
+axis(side=2)
+axis(side=1, at=mp, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+
+counts <- table(bad_dt[D_Female==1]$Subject_Gender_Female, bad_dt[D_Female==1]$CS_Rate_Num)
+mp <- barplot(counts, col=c("lightblue","pink"),legend = c('Male','Female'), axes=F, xaxt="n",xlab="Overall cust sat - Female Rep", ylab="Frequency", args.legend = list(x = "topright", bty = "n")) 
+axis(side=2)
+#axis(side=1, at=mp, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos', 'Very pos'))
+axis(side=1, at=mp, labels=c('Very neg', 'Somewhat neg', 'Neutral', 'Somewhat pos'))
+
+```
+
+## Correlation Analysis
+
+Examining the correlation (if any) between independent variables, and with the binary outcome variables. The chi-squared test produces a p-value under the null hypothesis that the variables are independent, so a low p-value will reject independence and act as a measure of correlation. We also calculate Cramer's V as a scaled measure of association for nominal variables.
+
+```{r, warning=FALSE}
+CHI <- function(x, y) 
+{test <- chisq.test(table(factor(x), factor(y))) 
+result <- c(test$p.value,round(sqrt(test$statistic/length(x)),2))
+return(result)
+}
+```
+
+### Association between outcomes and pre-treatment variables
+
+Blocking produces the greatest gains in precision when the variables used to predict blocks strongly predict outcomes. Here we will examine the correlation between our outcome variables and the pre-treatment variables to identify the best candidate(s) for blocking.
+
+```{r, warning=FALSE}
+cor_outcomes <- bad_dt[,c('CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')]
+cor_covariates <- bad_dt[,c('D_Female', 'CS_Ever_Outstanding_Ind', 'CS_Good_Use_of_Time_Pos', 
+                            'How_Often_Contact_CS_Ind', 'Recent_Support_Experience_Pos')]
+cor_covariatesdf <- as.data.frame(cor_covariates)
+
+```
+####Customer Success Overall Rating
+```{r, warning=FALSE}
+cor_outcomes.CS_Rate_Pos <- apply(cor_covariatesdf, 2, function(x) CHI(cor_outcomes$CS_Rate_Pos, x))
+cor_outcomes.CS_Rate_Pos[,]
+```
+
+
+The strongest correlation between overall customer satisfaction and a pre-treatment variable was (i) customer support good use of time, followed by (ii) recent customer support experience, then (iii) how often support is contacted
+
+####Would like to work with the rep again
+```{r, warning=FALSE}
+cor_outcomes.Hire_Rep_Ind <- apply(cor_covariatesdf, 2, function(x) CHI(cor_outcomes$Hire_Rep_Ind, x))
+cor_outcomes.Hire_Rep_Ind[2,]
+```
+
+The strongest correlation between wanting to work with the support rep again and a pre-treatment variable was (i) recent support experience
+
+####Rep understanding the problem
+```{r, warning=FALSE}
+cor_outcomes.Rep_Understand_Rate_Pos <- apply(cor_covariatesdf, 2, function(x) CHI(cor_outcomes$Rep_Understand_Rate_Pos, x))
+cor_outcomes.Rep_Understand_Rate_Pos[2,]
+```
+
+The strongest correlation between rep understanding the problem and a pre-treatment variable was (i) having previously experienced outstanding support, followed by (ii) how often contact customer support, then (iii) whether customer support is a good use of time
+
+####Support rep knowledgeable
+```{r, warning=FALSE}
+cor_outcomes.Support_Sat_Rate_Pos <- apply(cor_covariatesdf, 2, function(x) CHI(cor_outcomes$Support_Sat_Rate_Pos, x))
+cor_outcomes.Support_Sat_Rate_Pos[2,]
+```
+
+The strongest correlation between support rep knowledge and a pre-treatment variable was (i) how often support is contacted, followed by (ii) whether customer support is a good use of time, then (iii) recent support experience
+
+####Gift card amount
+```{r, warning=FALSE}
+cor_outcomes.Gift_Card_Amount_Ind <- apply(cor_covariatesdf, 2, function(x) CHI(cor_outcomes$Gift_Card_Amount_Ind, x))
+cor_outcomes.Gift_Card_Amount_Ind[2,]
+
+```
+The strongest correlation between gift card amount and a pre-treatment variable was (i) whether customer support is a good use of time, followed by (ii) having previously experienced outstanding support 
+
+### Association between outcomes and treatment variable
+
+The treatment variable (D_Female) is correlated to most of the outcome variables, except wanting to work with the rep again.
+
+### Association between outcomes and blocking variables
+
+```{r}
+cor_blockers <- bad_dt[,c('Subject_Age_Block', 'Subject_Gender_Female')]
+cor_blockersdf <- as.data.frame(cor_blockers)
+```
+
+####Customer Success Overall Rating
+```{r, warning=FALSE}
+cor_outcomesbl.CS_Rate_Pos <- apply(cor_blockersdf, 2, function(x) CHI(cor_outcomes$CS_Rate_Pos, x))
+cor_outcomesbl.CS_Rate_Pos[2,]
+```
+
+####Would like to work with the rep again
+```{r, warning=FALSE}
+cor_outcomesbl.Hire_Rep_Ind <- apply(cor_blockersdf, 2, function(x) CHI(cor_outcomes$Hire_Rep_Ind, x))
+cor_outcomesbl.Hire_Rep_Ind[2,]
+```
+
+####Rep understanding the problem
+```{r, warning=FALSE}
+cor_outcomesbl.Rep_Understand_Rate_Pos <- apply(cor_blockersdf, 2, function(x) CHI(cor_outcomes$Rep_Understand_Rate_Pos, x))
+cor_outcomesbl.Rep_Understand_Rate_Pos[2,]
+```
+
+####Support rep knowledgeable
+```{r, warning=FALSE}
+cor_outcomesbl.Support_Sat_Rate_Pos <- apply(cor_blockersdf, 2, function(x) CHI(cor_outcomes$Support_Sat_Rate_Pos, x))
+cor_outcomesbl.Support_Sat_Rate_Pos[2,]
+```
+
+####Gift card amount
+```{r, warning=FALSE}
+cor_outcomesbl.Gift_Card_Amount_Ind <- apply(cor_blockersdf, 2, function(x) CHI(cor_outcomes$Gift_Card_Amount_Ind, x))
+cor_outcomesbl.Gift_Card_Amount_Ind[2,]
+
+```
+
+Subject age appears to be correlated with all of the outcome variables. Only a small association is apparent for subject gender. 
+
+```{r}
+#round(cor(bad_dt[,c('D_Female', 'CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind', 'CS_Ever_Outstanding_Ind', 'CS_Good_Use_of_Time_Pos', 'How_Often_Contact_CS_Ind', 'Recent_Support_Experience_Pos')]),2)
+```
+
+```{r}
+#round(cor(bad_dt[,c('D_Female', 'CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind', 'Subject_Age_Block', 'Subject_Gender_Female')]),2)
+```
+Although the chi-squared test is better for binary variables, we ran a correlation matrix plot to get a feel for possible positive and negative correlations.
+
+```{r, warning=FALSE}
+library(corrplot)
+corrplot(cor(bad_dt[,c('D_Female', 'CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 
+                       'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind', 'CS_Ever_Outstanding_Ind', 
+                       'CS_Good_Use_of_Time_Pos', 'How_Often_Contact_CS_Ind', 'Recent_Support_Experience_Pos', 
+                       'Subject_Age_Block', 'Subject_Gender_Female')]), method = "circle")
+```
+
+
+## Covariate Balance Check
+
+```{r}
+null_mod <- bad_dt[ , lm(D_Female ~ 1)]
+full_mod <- bad_dt[ , lm(D_Female ~ 1 + CS_Ever_Outstanding_Ind + CS_Good_Use_of_Time_Pos + How_Often_Contact_CS_Ind + 
+                           Recent_Support_Experience_Pos + Subject_Age_Block + Subject_Gender_Female)]
+anova_mod <- anova(full_mod, null_mod, test = 'F')
+anova_mod
+```
+The additional model features do not increase our ability to predict whether someone is in the treatment or control group.
+
+We are satisfied with the randomness of our experiment data.
+
+## Which pre-treatment covariate is best?
+
+```{r}
+#Robust standard errors
+rse <- function(model, error) { 
+  vcov <- vcovHC(x = model, type = error)
+  se <- sqrt(diag(vcov))
+  return(se)
+}
+```
+
+
+**Based on the correlation coefficient and chi-squared analysis, we narrowed our pretreatment question down to 2**
+**We then performed regression analysis using these two covariates to make our decision on which one to use.** 
+
+```{r, warning=FALSE}
+lm_1 = lm(CS_Rate_Pos ~ D_Female + CS_Good_Use_of_Time_Pos, data = bad_dt)
+lm_2 = lm(CS_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+
+lm_3 = lm(Rep_Understand_Rate_Pos ~ D_Female + CS_Good_Use_of_Time_Pos, data = bad_dt)
+lm_4 = lm(Rep_Understand_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+
+lm_5 = lm(Support_Sat_Rate_Pos ~ D_Female + CS_Good_Use_of_Time_Pos, data = bad_dt)
+lm_6 = lm(Support_Sat_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+
+lm_7 = lm(Hire_Rep_Ind ~ D_Female + CS_Good_Use_of_Time_Pos, data = bad_dt)
+lm_8 = lm(Hire_Rep_Ind ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+
+lm_9 = lm(Gift_Card_Amount_Num ~ D_Female + CS_Good_Use_of_Time_Pos, data = bad_dt)
+lm_10 = lm(Gift_Card_Amount_Num ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+
+lm_11 = lm(Gift_Card_Amount_Ind ~ D_Female + CS_Good_Use_of_Time_Pos, data = bad_dt)
+lm_12 = lm(Gift_Card_Amount_Ind ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+```
+
+```{r, warning=FALSE}
+stargazer(lm_1, lm_2, se = list(rse(lm_1, "HC3"),rse(lm_2, "HC3")), type = "text")
+```
+```{r, warning=FALSE}
+stargazer(lm_3, lm_4, se = list(rse(lm_3, "HC3"),rse(lm_4, "HC3")), type = "text")
+```
+```{r, warning=FALSE}
+stargazer(lm_5, lm_6, se = list(rse(lm_5, "HC3"),rse(lm_6, "HC3")), type = "text")
+```
+```{r, warning=FALSE}
+stargazer(lm_7, lm_8, se = list(rse(lm_7, "HC3"),rse(lm_8, "HC3")), type = "text")
+```
+```{r, warning=FALSE}
+stargazer(lm_9, lm_10, lm_11, lm_12, se = list(rse(lm_9, "HC3"),rse(lm_10, "HC3"),rse(lm_11, "HC3"),rse(lm_12, "HC3")), type = "text")
+```
+
+## Regression Analysis on Outcome Variables
+For the pilot study, regression analysis was only performed on the bad support scenario. This means the models we are using for the pilot study are different to the ones we will use for our survey.
+
+The independent variables of interest are - 
+1) D_Female - the treatment assignment variable
+2) Subject_Gender_Female - whether or not the test subject is female
+3) Subject_Age_Block - which age block the test subjects belonged to
+4) Recent_Support_Experience_Pos - whether or not subject had a postive experience with most recent customer support
+
+Out of the 4 pre-treatment questions we used in the pilot, we decided to use the question concerning recent customer support experience as the blocking variable in our final experiment. We made this decision based on this variable having the strongest correlation with our outcome variables when compared to responses for other pre-treatment questions. The purpose of choosing a pre-treamtment question to gather data on a pre-treatment covariate was intendended to decrease the variability in the measurement of the ATE.  
+
+The linear models will have the following form:
+
+**Outcome for female rep vs male rep**
+1) Regression of outcome variable on D_Female
+
+**Or by blocking on subject gender?**
+2) Regression of outcome variable on D_Female and Subject_Gender_Female 
+
+**Can we improve precision by blocking on subject age?**
+3) Regression of outcome variable on D_Female and Subject_Age_Block
+
+**Can we improve precision by blocking on predisposition to customer support?**
+4) Regression of outcome variable on D_Female and Recent_Support_Experience_Pos
+
+**Combinations of blockers to improve precision?**
+4) Regression of outcome variable on D_Female and Subject_Gender_Female and Recent_Support_Experience_Pos
+5) Regression of outcome variable on D_Female and Subject_Gender_Female and Recent_Support_Experience_Pos
+
+In our final survey we will also conduct HTE analysis on age and gender.
+
+For each outcome variable, we will also run a randomization inference analysis to determine the threshold p-value.  
+
+### Overall, how would you rate the quality of the customer service experience?
+
+### Rating as Indicator 1 = Positive, 0 = Neutral/Negative
+
+**Regression**
+
+```{r, warning=FALSE}
+lm_CS_Rate_Pos_1 = lm(CS_Rate_Pos ~ D_Female, data = bad_dt)
+lm_CS_Rate_Pos_2 = lm(CS_Rate_Pos ~ D_Female + Subject_Gender_Female, data = bad_dt)
+lm_CS_Rate_Pos_3 = lm(CS_Rate_Pos ~ D_Female + factor(Subject_Age_Block), data = bad_dt)
+lm_CS_Rate_Pos_4 = lm(CS_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_CS_Rate_Pos_5 = lm(CS_Rate_Pos ~ D_Female + Subject_Gender_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_CS_Rate_Pos_6 = lm(CS_Rate_Pos ~ D_Female + factor(Subject_Age_Block) + Recent_Support_Experience_Pos, data= bad_dt)
+stargazer(lm_CS_Rate_Pos_1, lm_CS_Rate_Pos_2, lm_CS_Rate_Pos_3, lm_CS_Rate_Pos_4, lm_CS_Rate_Pos_5,lm_CS_Rate_Pos_6, se = list(rse(lm_CS_Rate_Pos_1, "HC3"),rse(lm_CS_Rate_Pos_2, "HC3"),rse(lm_CS_Rate_Pos_3, "HC3"),rse(lm_CS_Rate_Pos_4, "HC3"),rse(lm_CS_Rate_Pos_5, "HC3"),rse(lm_CS_Rate_Pos_6, "HC3")), type = "text")
+```
+
+***Logistic regression***
+
+```{r, warning=FALSE}
+#https://rpubs.com/rslbliss/r_logistic_ws
+lm_CS_Rate_Pos_4 = lm(CS_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_CS_Rate_Pos_4_logit <- glm(factor(CS_Rate_Pos) ~ D_Female + Recent_Support_Experience_Pos, data = bad_dt, 
+                              family = binomial(link="logit"))
+lm_CS_Rate_Num_4_logit <- polr(factor(CS_Rate_Num) ~ D_Female + Recent_Support_Experience_Pos, data = bad_dt)
+
+stargazer(lm_CS_Rate_Pos_4, se = list(rse(lm_CS_Rate_Pos_4, "HC3")), type = "text")
+stargazer(lm_CS_Rate_Pos_4_logit, lm_CS_Rate_Num_4_logit, apply.coef = exp, apply.se = exp,  t.auto=F, p.auto=F, type = "text")
+summary(lm_CS_Rate_Pos_4_logit)
+summary(lm_CS_Rate_Num_4_logit)
+```
+***Convert to odds ratios, calculate p-values and interpret**
+
+```{r}
+(exp(lm_CS_Rate_Pos_4_logit$coef)-1)*100
+pt(-1.088, 28-2, lower.tail=FALSE)*2
+```
+Interpretation of logistic regression:
+For each additional subject reviewing the female support representative we would expect a 66% decrease in overall customer satisfaction. However, this result is not statistically significant.
+
+```{r}
+(exp(lm_CS_Rate_Num_4_logit$coef)-1)*100
+pt(-1.5339, 28-2, lower.tail=FALSE)*2
+```
+
+Interpretation of ordinal logistic regression:
+For each additional subject reviewing the female support representative we would expect a 67% decrease in overall customer satisfaction. However, this result is not statistically significant.
+
+
+**Randomization Inference**
+
+```{r}
+bad_dt[, .(sum(Count)), by=D_Female]
+```
+
+In our random assignment, since we removed one subject due to erroneous treatment, we assigned 13 subjects to the control group and 15 subjects to the treatment group. 
+
+```{r}
+#define treatment vector function which randomizes the assignment of 13 to control, 15 to treatment
+treatment <- function(){
+  sample(c(rep(0,13),rep(1,15)))
+} 
+
+#define outcomes vector
+outcomes = bad_dt$CS_Rate_Pos
+#under sharp null hypthesis, we assume that Y_i(1)=Y_i(0)=views[i]
+#outcomes vector is constant for each iteration, but the treatment vector varies 
+#each iteration to the next.  
+
+#define function to calculate ATE:
+
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+#replicate 10,000 times
+distribution_under_sharp_null <- replicate(10000, calc_ate(outcomes, treatment()))
+
+#plot distribution under the sharp null 
+plot(density(distribution_under_sharp_null), 
+     main = "Density under Sharp Null")
+
+#calculate 2 tailed p-value
+(two_tail_p_t = mean(abs(summary(lm_CS_Rate_Pos_1)$coefficients[2,1])<=abs(distribution_under_sharp_null)))
+```
+```{r}
+sd(distribution_under_sharp_null)
+```
+
+```{r}
+(coeftest(lm_CS_Rate_Pos_1, vcovHC(lm_CS_Rate_Pos_1, "HC3")))
+```
+
+
+**A little concerned here - the two-tailed p-value from Randomization Inference does not match the two-tailed p-value in linear regression**
+
+### How satisfied are you with the knowledge of the technician that solved the issue?
+
+#### Rating as Indicator
+
+**Regression**
+```{r, warning=FALSE}
+lm_Support_Sat_Rate_Pos_1 = lm(Support_Sat_Rate_Pos ~ D_Female, data = bad_dt)
+lm_Support_Sat_Rate_Pos_2 = lm(Support_Sat_Rate_Pos ~ D_Female + Subject_Gender_Female, data = bad_dt)
+lm_Support_Sat_Rate_Pos_3 = lm(Support_Sat_Rate_Pos ~ D_Female + factor(Subject_Age_Block), data = bad_dt)
+lm_Support_Sat_Rate_Pos_4 = lm(Support_Sat_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Support_Sat_Rate_Pos_5 = lm(Support_Sat_Rate_Pos ~ D_Female + Subject_Gender_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Support_Sat_Rate_Pos_6 = lm(Support_Sat_Rate_Pos ~ D_Female + factor(Subject_Age_Block) + Recent_Support_Experience_Pos, data= bad_dt)
+stargazer(lm_Support_Sat_Rate_Pos_1, lm_Support_Sat_Rate_Pos_2, lm_Support_Sat_Rate_Pos_3, lm_Support_Sat_Rate_Pos_4, lm_Support_Sat_Rate_Pos_5, lm_Support_Sat_Rate_Pos_6, se = list(rse(lm_Support_Sat_Rate_Pos_1, "HC3"),rse(lm_Support_Sat_Rate_Pos_2, "HC3"),rse(lm_Support_Sat_Rate_Pos_3, "HC3"),rse(lm_Support_Sat_Rate_Pos_4, "HC3"),rse(lm_Support_Sat_Rate_Pos_5, "HC3"),rse(lm_Support_Sat_Rate_Pos_6, "HC3")), type = "text")
+```
+
+**Randomization Inference**
+
+```{r}
+treatment <- function(){
+  sample(c(rep(0,13),rep(1,15)))
+} 
+
+#define outcomes vector
+outcomes = bad_dt$Support_Sat_Rate_Pos
+#under sharp null hypthesis, we assume that Y_i(1)=Y_i(0)=views[i]
+#outcomes vector is constant for each iteration, but the treatment vector varies 
+#each iteration to the next.  
+
+#define function to calculate ATE:
+
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+#replicate 10,000 times
+distribution_under_sharp_null <- replicate(10000, calc_ate(outcomes, treatment()))
+
+#plot distribution under the sharp null 
+plot(density(distribution_under_sharp_null), 
+     main = "Density under Sharp Null")
+
+#calculate 2 tailed p-value
+(two_tail_p_t = mean(abs(summary(lm_Support_Sat_Rate_Pos_1)$coefficients[2,1])<=abs(distribution_under_sharp_null)))
+```
+
+```{r}
+sd(distribution_under_sharp_null)
+(coeftest(lm_Support_Sat_Rate_Pos_1, vcovHC(lm_Support_Sat_Rate_Pos_1, "HC3")))
+```
+
+### How well did the technician understand the customer's questions and concerns?
+
+**Regression**
+
+```{r, warning=FALSE}
+lm_Rep_Understand_Rate_Pos_1 = lm(Rep_Understand_Rate_Pos ~ D_Female, data = bad_dt)
+lm_Rep_Understand_Rate_Pos_2 = lm(Rep_Understand_Rate_Pos ~ D_Female + Subject_Gender_Female, data = bad_dt)
+lm_Rep_Understand_Rate_Pos_3 = lm(Rep_Understand_Rate_Pos ~ D_Female + factor(Subject_Age_Block), data = bad_dt)
+lm_Rep_Understand_Rate_Pos_4 = lm(Rep_Understand_Rate_Pos ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Rep_Understand_Rate_Pos_5 = lm(Rep_Understand_Rate_Pos ~ D_Female + Subject_Gender_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Rep_Understand_Rate_Pos_6 = lm(Rep_Understand_Rate_Pos ~ D_Female + factor(Subject_Age_Block) + Recent_Support_Experience_Pos, data= bad_dt)
+stargazer(lm_Rep_Understand_Rate_Pos_1, lm_Rep_Understand_Rate_Pos_2, lm_Rep_Understand_Rate_Pos_3, lm_Rep_Understand_Rate_Pos_4, lm_Rep_Understand_Rate_Pos_5, lm_Rep_Understand_Rate_Pos_6, se = list(rse(lm_Rep_Understand_Rate_Pos_1, "HC3"),rse(lm_Rep_Understand_Rate_Pos_2, "HC3"),rse(lm_Rep_Understand_Rate_Pos_3, "HC3"),rse(lm_Rep_Understand_Rate_Pos_4, "HC3"),rse(lm_Rep_Understand_Rate_Pos_5, "HC3"),rse(lm_Rep_Understand_Rate_Pos_6, "HC3")), type = "text")
+```
+
+**Randomization Inference**
+
+```{r}
+treatment <- function(){
+  sample(c(rep(0,13),rep(1,15)))
+} 
+
+#define outcomes vector
+outcomes = bad_dt$Rep_Understand_Rate_Pos
+#under sharp null hypthesis, we assume that Y_i(1)=Y_i(0)=views[i]
+#outcomes vector is constant for each iteration, but the treatment vector varies 
+#each iteration to the next.  
+
+#define function to calculate ATE:
+
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+#replicate 10,000 times
+distribution_under_sharp_null <- replicate(10000, calc_ate(outcomes, treatment()))
+
+#plot distribution under the sharp null 
+plot(density(distribution_under_sharp_null), 
+     main = "Density under Sharp Null")
+
+#calculate 2 tailed p-value
+(two_tail_p_t = mean(abs(summary(lm_Rep_Understand_Rate_Pos_1)$coefficients[2,1])<=abs(distribution_under_sharp_null)))
+```
+
+```{r}
+sd(distribution_under_sharp_null)
+(coeftest(lm_Rep_Understand_Rate_Pos_1, vcovHC(lm_Rep_Understand_Rate_Pos_1, "HC3")))
+```
+
+### Would you want this person to provide support for you in the future?
+
+**Regression**
+
+```{r, warning=FALSE}
+lm_Hire_Rep_Ind_1 = lm(Hire_Rep_Ind ~ D_Female, data = bad_dt)
+lm_Hire_Rep_Ind_2 = lm(Hire_Rep_Ind ~ D_Female + Subject_Gender_Female, data = bad_dt)
+lm_Hire_Rep_Ind_3 = lm(Hire_Rep_Ind ~ D_Female + factor(Subject_Age_Block), data = bad_dt)
+lm_Hire_Rep_Ind_4 = lm(Hire_Rep_Ind ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Hire_Rep_Ind_5 = lm(Hire_Rep_Ind ~ D_Female + Subject_Gender_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Hire_Rep_Ind_6 = lm(Hire_Rep_Ind ~ D_Female + factor(Subject_Age_Block) + Recent_Support_Experience_Pos, data= bad_dt)
+stargazer(lm_Hire_Rep_Ind_1, lm_Hire_Rep_Ind_2, lm_Hire_Rep_Ind_3, lm_Hire_Rep_Ind_4, lm_Hire_Rep_Ind_5, lm_Hire_Rep_Ind_6, se = list(rse(lm_Hire_Rep_Ind_1, "HC3"),rse(lm_Hire_Rep_Ind_2, "HC3"),rse(lm_Hire_Rep_Ind_3, "HC3"),rse(lm_Hire_Rep_Ind_4, "HC3"),rse(lm_Hire_Rep_Ind_5, "HC3"),rse(lm_Hire_Rep_Ind_6, "HC3")), type = "text")
+```
+
+**Randomization Inference**
+
+```{r}
+treatment <- function(){
+  sample(c(rep(0,13),rep(1,15)))
+} 
+
+#define outcomes vector
+outcomes = bad_dt$Hire_Rep_Ind
+#under sharp null hypthesis, we assume that Y_i(1)=Y_i(0)=views[i]
+#outcomes vector is constant for each iteration, but the treatment vector varies 
+#each iteration to the next.  
+
+#define function to calculate ATE:
+
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+#replicate 10,000 times
+distribution_under_sharp_null <- replicate(10000, calc_ate(outcomes, treatment()))
+
+#plot distribution under the sharp null 
+plot(density(distribution_under_sharp_null), 
+     main = "Density under Sharp Null")
+
+#calculate 2 tailed p-value
+(two_tail_p_t = mean(abs(summary(lm_Hire_Rep_Ind_1)$coefficients[2,1])<=abs(distribution_under_sharp_null)))
+```
+
+
+```{r}
+sd(distribution_under_sharp_null)
+(coeftest(lm_Hire_Rep_Ind_1, vcovHC(lm_Hire_Rep_Ind_1, "HC3")))
+```
+
+
+
+### When a call transcript is reviewed, representatives are eligible for an 'outstanding service' gift card reward. Based on agent's performance, what reward level would you recommend?
+
+#### Numeric Amount of Gift Card
+
+**Regression**
+
+```{r, warning=FALSE}
+lm_Gift_Card_Amount_Num_1 = lm(Gift_Card_Amount_Num ~ D_Female, data = bad_dt)
+lm_Gift_Card_Amount_Num_2 = lm(Gift_Card_Amount_Num ~ D_Female + Subject_Gender_Female, data = bad_dt)
+lm_Gift_Card_Amount_Num_3 = lm(Gift_Card_Amount_Num ~ D_Female + factor(Subject_Age_Block), data = bad_dt)
+lm_Gift_Card_Amount_Num_4 = lm(Gift_Card_Amount_Num ~ D_Female + CS_Good_Use_of_Time_Pos, data= bad_dt)
+lm_Gift_Card_Amount_Num_5 = lm(Gift_Card_Amount_Num ~ D_Female + Subject_Gender_Female + CS_Good_Use_of_Time_Pos, data= bad_dt)
+lm_Gift_Card_Amount_Num_6 = lm(Gift_Card_Amount_Num ~ D_Female + factor(Subject_Age_Block) + CS_Good_Use_of_Time_Pos, data= bad_dt)
+stargazer(lm_Gift_Card_Amount_Num_1, lm_Gift_Card_Amount_Num_2, lm_Gift_Card_Amount_Num_3, lm_Gift_Card_Amount_Num_4, lm_Gift_Card_Amount_Num_5, lm_Gift_Card_Amount_Num_6, se = list(rse(lm_Gift_Card_Amount_Num_1, "HC3"),rse(lm_Gift_Card_Amount_Num_2, "HC3"),rse(lm_Gift_Card_Amount_Num_3, "HC3"),rse(lm_Gift_Card_Amount_Num_4, "HC3"),rse(lm_Gift_Card_Amount_Num_5, "HC3"),rse(lm_Gift_Card_Amount_Num_6, "HC3")), type = "text")
+```
+
+**Randomization Inference**
+
+```{r}
+treatment <- function(){
+  sample(c(rep(0,13),rep(1,15)))
+} 
+
+#define outcomes vector
+outcomes = bad_dt$Gift_Card_Amount_Num
+#under sharp null hypthesis, we assume that Y_i(1)=Y_i(0)=views[i]
+#outcomes vector is constant for each iteration, but the treatment vector varies 
+#each iteration to the next.  
+
+#define function to calculate ATE:
+
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+#replicate 10,000 times
+distribution_under_sharp_null <- replicate(10000, calc_ate(outcomes, treatment()))
+
+#plot distribution under the sharp null 
+plot(density(distribution_under_sharp_null), 
+     main = "Density under Sharp Null")
+
+#calculate 2 tailed p-value
+(two_tail_p_t = mean(abs(summary(lm_Gift_Card_Amount_Num_1)$coefficients[2,1])<=abs(distribution_under_sharp_null)))
+```
+
+```{r}
+sd(distribution_under_sharp_null)
+(coeftest(lm_Gift_Card_Amount_Num_1, vcovHC(lm_Gift_Card_Amount_Num_1, "HC3")))
+```
+
+#### Gift Card Indicator: 1 = Any amount, 0 = Nothing
+
+**Regression**
+
+```{r, warning=FALSE}
+lm_Gift_Card_Amount_Ind_1 = lm(Gift_Card_Amount_Ind ~ D_Female, data = bad_dt)
+lm_Gift_Card_Amount_Ind_2 = lm(Gift_Card_Amount_Ind ~ D_Female + Subject_Gender_Female, data = bad_dt)
+lm_Gift_Card_Amount_Ind_3 = lm(Gift_Card_Amount_Ind ~ D_Female + factor(Subject_Age_Block), data = bad_dt)
+lm_Gift_Card_Amount_Ind_4 = lm(Gift_Card_Amount_Ind ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Gift_Card_Amount_Ind_5 = lm(Gift_Card_Amount_Ind ~ D_Female + Subject_Gender_Female + Recent_Support_Experience_Pos, data= bad_dt)
+lm_Gift_Card_Amount_Ind_6 = lm(Gift_Card_Amount_Ind ~ D_Female + factor(Subject_Age_Block) + Recent_Support_Experience_Pos, data= bad_dt)
+stargazer(lm_Gift_Card_Amount_Ind_1, lm_Gift_Card_Amount_Ind_2, lm_Gift_Card_Amount_Ind_3, lm_Gift_Card_Amount_Ind_4, lm_Gift_Card_Amount_Ind_5, lm_Gift_Card_Amount_Ind_6, se = list(rse(lm_Gift_Card_Amount_Ind_1, "HC3"),rse(lm_Gift_Card_Amount_Ind_2, "HC3"),rse(lm_Gift_Card_Amount_Ind_3, "HC3"),rse(lm_Gift_Card_Amount_Ind_4, "HC3"),rse(lm_Gift_Card_Amount_Ind_5, "HC3"),rse(lm_Gift_Card_Amount_Ind_6, "HC3")), type = "text")
+```
+
+**Randomization Inference**
+
+```{r}
+treatment <- function(){
+  sample(c(rep(0,13),rep(1,15)))
+} 
+
+#define outcomes vector
+outcomes = bad_dt$Gift_Card_Amount_Ind
+#under sharp null hypthesis, we assume that Y_i(1)=Y_i(0)=views[i]
+#outcomes vector is constant for each iteration, but the treatment vector varies 
+#each iteration to the next.  
+
+#define function to calculate ATE:
+
+calc_ate <- function(outcomes, treatment){
+  mean(outcomes[treatment == 1]) - mean(outcomes[treatment == 0])
+}
+
+#replicate 10,000 times
+distribution_under_sharp_null <- replicate(10000, calc_ate(outcomes, treatment()))
+
+#plot distribution under the sharp null 
+plot(density(distribution_under_sharp_null), 
+     main = "Density under Sharp Null")
+
+#calculate 2 tailed p-value
+(two_tail_p_t = mean(abs(summary(lm_Gift_Card_Amount_Ind_1)$coefficients[2,1])<=abs(distribution_under_sharp_null)))
+```
+
+```{r}
+sd(distribution_under_sharp_null)
+(coeftest(lm_Gift_Card_Amount_Ind_1, vcovHC(lm_Gift_Card_Amount_Ind_1, "HC3")))
+```
+
+## Calculating Ideal Sample Size
+$SE\propto[1/\sqrt{n}]$
+In order for ATE to be significant, ATE>1.96*SE
+
+let $SE'$ = desired SE
+$n'$ = desired n
+
+$\dfrac{SE}{SE'}=\dfrac{\sqrt{n'}}{\sqrt{n}}$
+
+$SE'=SE\cdot\sqrt{\dfrac{n}{n'}}<\dfrac{ATE}{1.96}$
+
+Solve for desired sample size n'
+
+$n'>\left(SE\cdot\sqrt{n}\cdot1.96/ATE\right)^{2}$
+
+For the following code on calculating the ideal sample size, n' for each outcome variable, we use the estimated ATE and robust SE from the base linear regression model with no controlling covariates.  
+
+```{r}
+(CS_Rate_ATE = coeftest(lm_CS_Rate_Pos_1, vcovHC(lm_CS_Rate_Pos_1, "HC3"))[2,1])
+(CS_Rate_SE = coeftest(lm_CS_Rate_Pos_1, vcovHC(lm_CS_Rate_Pos_1, "HC3"))[2,2])
+(idealn_CS_Rate = (CS_Rate_SE*(28**0.5)*1.96/CS_Rate_ATE)**2)
+```
+
+```{r}
+(Support_Sat_Rate_ATE = coeftest(lm_Support_Sat_Rate_Pos_1, vcovHC(lm_Support_Sat_Rate_Pos_1, "HC3"))[2,1])
+(Support_Sat_Rate_SE = coeftest(lm_Support_Sat_Rate_Pos_1, vcovHC(lm_Support_Sat_Rate_Pos_1, "HC3"))[2,2])
+(idealn_Support_Sate_Rate = (Support_Sat_Rate_SE*(28**0.5)*1.96/Support_Sat_Rate_ATE)**2)
+```
+
+```{r}
+(Rep_Understand_Rate_ATE = coeftest(lm_Rep_Understand_Rate_Pos_1, vcovHC(lm_Rep_Understand_Rate_Pos_1, "HC3"))[2,1])
+(Rep_Understand_Rate_SE = coeftest(lm_Rep_Understand_Rate_Pos_1, vcovHC(lm_Rep_Understand_Rate_Pos_1, "HC3"))[2,2])
+(idealn_Rep_Understand_Rate = (Rep_Understand_Rate_SE*(28**0.5)*1.96/Rep_Understand_Rate_ATE)**2)
+```
+
+```{r}
+(Hire_Rep_Ind_ATE = coeftest(lm_Hire_Rep_Ind_1, vcovHC(lm_Hire_Rep_Ind_1, "HC3"))[2,1])
+(Hire_Rep_Ind_SE = coeftest(lm_Hire_Rep_Ind_1, vcovHC(lm_Hire_Rep_Ind_1, "HC3"))[2,2])
+(idealn_Hire_Rep_Ind = (Hire_Rep_Ind_SE*(28**0.5)*1.96/Hire_Rep_Ind_ATE)**2)
+```
+
+```{r}
+(Gift_Card_Amount_Ind_ATE = coeftest(lm_Gift_Card_Amount_Ind_1, vcovHC(lm_Gift_Card_Amount_Ind_1, "HC3"))[2,1])
+(Gift_Card_Amount_Ind_SE = coeftest(lm_Gift_Card_Amount_Ind_1, vcovHC(lm_Gift_Card_Amount_Ind_1, "HC3"))[2,2])
+(idealn_Gift_Card_Amount_Ind = (Gift_Card_Amount_Ind_SE*(28**0.5)*1.96/Gift_Card_Amount_Ind_ATE)**2)
+```
+
+```{r}
+(Gift_Card_Amount_Num_ATE = coeftest(lm_Gift_Card_Amount_Num_1, vcovHC(lm_Gift_Card_Amount_Num_1, "HC3"))[2,1])
+(Gift_Card_Amount_Num_SE = coeftest(lm_Gift_Card_Amount_Ind_1, vcovHC(lm_Gift_Card_Amount_Num_1, "HC3"))[2,2])
+(idealn_Gift_Card_Amount_Num = (Gift_Card_Amount_Num_SE*(28**0.5)*1.96/Gift_Card_Amount_Num_ATE)**2)
+```
+
+## Principle Component Analysis
+```{r}
+#Principle Component Analysis on binary outcome variables
+outcomes.pca <- prcomp(bad_dt[,c('CS_Rate_Pos', 'Hire_Rep_Ind', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos', 'Gift_Card_Amount_Ind')], scale. = TRUE)
+outcomes.pca.3 <- prcomp(bad_dt[,c('CS_Rate_Pos', 'Rep_Understand_Rate_Pos', 'Support_Sat_Rate_Pos')], scale. = TRUE)
+#summary(outcomes.pca)
+#str(outcomes.pca)
+#dim(outcomes.pca$x)
+```
+```{r}
+#Extract the component which captures most of the variance
+outcomes.pca1 <- outcomes.pca$x[,1]
+outcomes.pca1.3 <- outcomes.pca.3$x[,1]
+
+#Making a copy of the dt in case I mess something up
+bad_dt_pca <- bad_dt
+bad_dt_pca[, outcomes.pca := outcomes.pca1]
+bad_dt_pca[, outcomes.pca.3 := outcomes.pca1.3]
+head(bad_dt_pca)
+```
+```{r}
+#Model using the new pca outcome
+lm_pca_Ind_4 = lm(outcomes.pca ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+summary(lm_pca_Ind_4)
+lm_pca3_Ind_4 = lm(outcomes.pca.3 ~ D_Female + Recent_Support_Experience_Pos, data= bad_dt)
+summary(lm_pca3_Ind_4)
+
+stargazer(lm_CS_Rate_Pos_4, lm_pca_Ind_4, lm_pca3_Ind_4,se = list(rse(lm_CS_Rate_Pos_4, "HC3"),rse(lm_pca_Ind_4, "HC3"),rse(lm_pca3_Ind_4, "HC3")), type = "text")
+
+```
+
