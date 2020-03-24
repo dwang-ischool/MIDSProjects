@@ -6,7 +6,6 @@ The projects are organized by the programming language (Python, R).  In the tabl
 
 ## Python 
 
-</style>
 |Project Name|Description|Individual or Group|My Contribution|
 |---|---|---|---|
 |[2DEscapeTheRoom](https://github.com/dwang-ischool/MIDSProjects/tree/master/Python/2DEscapeTheRoom)|This project is the most complete representation of object oriented programming using Python. A game which I designed end to end, the 2DEscapeTheRoom.py file is a playble in Terminal (using Python 3), and allows you to escape from 1-4 rooms. I have also included a video (2DEscapeTheRoomGameplay.mp4), which shows me playing the game.|Individual||
