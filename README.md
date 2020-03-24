@@ -6,9 +6,9 @@ The projects are organized by the programming language (Python, R), and ordered 
 
 ## Python 
 
+</style>
 |Project Name|Description|Individual or Group|My Contribution|
-|---|---|---|---|
-|<img width=200/>|<img width=500/>|<img width=100/>|<img width=500/>|
+|---|-----------|---|---------------|
 |BechdelTestEDA|An exploratory data analysis of films found on IMDB and their Bechdel Test Scores, a score given to movies based on the level of female character interation.  We use Python, predominately NumPy and pandas, to examine if any correlations exist between Bechdel Test Scores and factors such as movie genres, runtime, IMDB ratings, time of film release, bankability of films and the bankability of actors and actresses|Group|Pre-analysis data processing such as table joining, Analysis of Bechdel score correlation with movie genres, movie runtime and IMDB ratings, and bankability of top 50 films|
 |[2DEscapeTheRoom](https://github.com/dwang-ischool/MIDSProjects/tree/master/Python/2DEscapeTheRoom)|This project is the most complete and clear representation of object oriented programming using Python. The 2DEscapeTheRoom.py file is a playble game in Terminal, provided you have Python 3. I have also included a video (2DEscapeTheRoomGameplay.mp4), which shows me testing the game I created.|Individual||
 |BikeShareRecommendations|Using a combination of Python and SQL, I obtained data from Google Bigquery's publically accessble data set of bike share activities of a company based in San Francisco.  Data analysis was conducted to produce recommendations for how the company may be able to increase business revenue|Individual||
