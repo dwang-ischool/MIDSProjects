@@ -22,3 +22,5 @@ The projects are organized by the programming language (Python, R).  In the tabl
 |CrimeRateLinearModels|This project explores relationships between between variables, such as population density, probability of arrest, probability of conviction, and police per capita, and their effects on Crime Rate in 1987 North Carolina across 90 counties.  We then designed a linear regression model of best fit to predict crime rate using measurements of fit (Adjusted R<sup>2</sup>, AIC), and testing of assumptions of Classical Linear Model (CLM) to motivate which explanatory variables to include|Group|Model design and testing of various versions, analysis of variable inclusion based on fit and CLM assumptions|
 |||||
 
+## Capstone 
+Our capstone project is currently under production.  
