@@ -1,6 +1,9 @@
 # MIDSProjects
 
-This repository contains projects that highlight my body of work in the UC Berkeley's Master of Information and Data Science Program.  The program was completed from May 2018 to May 2020. In the tables below, you will find a brief description of every project, whether a project required individual effort or group effort, and my notes on my specific contribution for group projects.  The projects are split by programming languages, Python and R. 
+This repository contains notable projects during my pursuit of the Master of Information and Technology from the University of California, Berkeley, from May 2018 to May 2020. In the tables below, you will find a brief description of every project, whether a project required individual effort or group effort, and my notes on my specific contribution for group projects.  The projects are split by programming languages, Python and R. 
+
+## Capstone
+
 
 ## Python 
 
